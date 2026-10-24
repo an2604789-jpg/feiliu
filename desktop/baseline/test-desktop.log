@@ -1,9 +1,0 @@
-﻿
-  desktop shell integration
-
-  Desktop daemon lifecycle (isolated data roots)
-    PASS  Desktop: starts an owned daemon when none is running and stops it cleanly  (439ms)
-    PASS  Desktop: reuses a healthy daemon, never spawns a second one, and never stops it  (1731ms)
-    PASS  Desktop: treats a stale runtime as absent and starts a fresh owned daemon  (456ms)
-
-  3 passed, 0 failed
