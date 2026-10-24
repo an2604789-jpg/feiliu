@@ -1,0 +1,525 @@
+// Real browser verification of the GUI download lifecycle.
+//
+// Required by the batch acceptance criteria: add, pause, resume, delete,
+// retry-after-failure and "state survives a refresh". Every step is performed
+// through the DOM of the real page in a real Chromium browser, and every
+// assertion reads the rendered text back. An HTTP 200 from the API would not
+// prove any of it, so the API is never used to assert the outcome — only to
+// check the file that ended up on disk.
+
+import fsp from "node:fs/promises";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createHash } from "node:crypto";
+
+import { Suite, assert } from "./harness.mjs";
+import { findBrowser, launchBrowser, Cdp, pageTarget, waitFor, startGuiOrigin } from "./gui-browser.mjs";
+
+async function hashFile(file) {
+  const h = createHash("sha256");
+  await new Promise((resolve, reject) => {
+    const rs = fs.createReadStream(file);
+    rs.on("data", (c) => h.update(c));
+    rs.once("end", resolve);
+    rs.once("error", reject);
+  });
+  return h.digest("hex");
+}
+
+/**
+ * The scenarios this module runs, so a skip can name each one.
+ * Kept beside the tests so a new test is added to the list in one place.
+ */
+export const GUI_SCENARIOS = [
+  "GUI: a URL typed into the box becomes a task on screen",
+  "GUI: Pause stops the transfer and Resume continues it",
+  "GUI: a failing download explains itself and offers Retry",
+  "GUI: reloading the page keeps every task and its state",
+  "GUI: Delete removes the row and keeps the file on disk",
+  "GUI: an unknown-length download shows bytes, never a fake percentage",
+  "GUI: a dragged row changes the persisted queue order",
+  "GUI: settings saved from the form take effect",
+  "GUI: the Discover tab lists a media stream and can queue it",
+];
+
+/**
+ * Register the browser GUI tests on a suite.
+ *
+ * @param {Suite} suite
+ * @param {{ projectDir:string }} ctx
+ * @returns {Promise<{executed:boolean, browser:string|null, reason:string|null}>}
+ */
+export async function runGuiBrowserTests(suite, ctx) {
+  const browser = findBrowser();
+  if (!browser) {
+    // Report every scenario as skipped with the reason, rather than quietly
+    // passing: an unrunnable check must never look like a satisfied one.
+    for (const name of GUI_SCENARIOS) {
+      suite.skip(name, "no Chrome or Edge installation was found on this host");
+    }
+    return { executed: false, browser: null, reason: "no Chrome or Edge installation was found on this host" };
+  }
+
+  // The daemon must serve the GUI from its own data root, so it gets one here
+  // and the browser talks to the URL the daemon actually publishes.
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "downloadx-gui-"));
+  const outDir = path.join(home, "downloads");
+  await fsp.mkdir(outDir, { recursive: true });
+
+  const previousHome = process.env.DOWNLOADX_HOME;
+  process.env.DOWNLOADX_HOME = home;
+
+  const { Daemon } = await import("../src/daemon.mjs");
+  const daemon = await new Daemon({ port: 0 }).init();
+  await daemon.config.set({
+    defaultDir: outDir,
+    categorizeByType: false,
+    overwriteExisting: "overwrite",
+    maxConnections: 2,
+    maxConcurrentDownloads: 2,
+    // The watcher reads the real system clipboard and queues any URL it finds.
+    // That is the intended behaviour, but it would add tasks behind the test's
+    // back and make the row indices meaningless.
+    monitorClipboard: false,
+  });
+  const runtime = await daemon.start();
+
+  const origin = await startGuiOrigin({ size: 1024 * 1024 });
+  const launched = await launchBrowser({ browser });
+  let cdp = null;
+
+  try {
+    const target = await pageTarget(launched.port);
+    cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.navigate", { url: runtime.url });
+    await waitFor(() => cdp.eval("document.readyState === 'complete'"), "the GUI page to load");
+    // The page injects its token; without it every API call 401s and the
+    // failure mode looks like a broken GUI rather than a broken test.
+    await waitFor(() => cdp.eval("!!(window.__DOWNLOADX__ && window.__DOWNLOADX__.token)"), "the token to be injected");
+    await waitFor(() => cdp.eval("/active|\u2014/.test(document.getElementById('summary').textContent)"), "the summary bar to render");
+
+    /** Read every rendered row as plain data. */
+    const readRows = () => cdp.eval(`(() => {
+      return [...document.querySelectorAll("#list tbody tr")].map((tr) => ({
+        id: tr.dataset.id,
+        name: tr.querySelector(".name")?.textContent || "",
+        status: tr.querySelector(".pill")?.textContent || "",
+        progress: tr.querySelector("td.num")?.textContent || "",
+        detail: tr.querySelector("td:nth-child(5)")?.textContent || "",
+        actions: [...tr.querySelectorAll("button[data-a]")].map((b) => b.dataset.a),
+      }));
+    })()`);
+
+    /**
+     * Click a row action button, addressed by task id.
+     *
+     * The list re-renders on a timer, so an index captured a moment earlier can
+     * point at a different task by the time the click happens. The id is stable.
+     */
+    const clickActionById = (id, action) => cdp.eval(`(() => {
+      const tr = document.querySelector('tr[data-id="${id}"]');
+      if (!tr) return "no-row";
+      const b = tr.querySelector('button[data-a="${action}"]');
+      if (!b) return "no-button";
+      b.click();
+      return "clicked";
+    })()`);
+
+    /** Type into the URL box the way a user would, then press Add. */
+    const addUrl = (url) => cdp.eval(`(() => {
+      const input = document.getElementById("urlInput");
+      input.value = ${JSON.stringify(url)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.getElementById("btnAdd").click();
+      return "submitted";
+    })()`);
+
+    // ---------------------------------------------------- 1. add a download
+    await suite.test("GUI: a URL typed into the box becomes a task on screen", async () => {
+      await addUrl(origin.url);
+      const rows = await waitFor(async () => {
+        const r = await readRows();
+        return r.length ? r : null;
+      }, "the new task to appear in the list");
+      assert.equal(rows.length, 1, "exactly one row must be rendered");
+      assert.match(rows[0].name, /gui-probe\.bin|download\.bin/, "the row must show the file name");
+    });
+
+    // ------------------------------------------------ 2. pause / 3. resume
+    await suite.test("GUI: Pause stops the transfer and Resume continues it", async () => {
+      // Re-add through the slow route so there is time to pause it.
+      await addUrl(origin.url);
+      await waitFor(async () => (await readRows()).length === 2, "the second row");
+      // Give the transfer a moment to actually start moving.
+      await waitFor(async () => {
+        const rows = await readRows();
+        return rows.some((r) => r.status === "downloading" || r.status === "complete");
+      }, "the transfer to start", 15000);
+
+      const pausable = (await readRows()).find((r) => r.actions.includes("pause"));
+      assert.ok(pausable, "a running task must offer a Pause button");
+      assert.equal(await clickActionById(pausable.id, "pause"), "clicked");
+
+      const paused = await waitFor(async () => {
+        const rows = await readRows();
+        const row = rows.find((r) => r.id === pausable.id);
+        return row && row.status === "paused" ? row : null;
+      }, "the row to show 'paused'");
+      assert.equal(paused.status, "paused", "the pill must read paused after clicking Pause");
+      assert.ok(paused.actions.includes("start"), "a paused task must offer Resume");
+      assert.ok(/kept for resume/.test(paused.detail), "the paused row must say the partial file was kept: " + paused.detail);
+
+      // Resume it and confirm the row leaves the paused state.
+      assert.equal(await clickActionById(pausable.id, "start"), "clicked");
+      await waitFor(async () => {
+        const rows = await readRows();
+        const row = rows.find((r) => r.id === pausable.id);
+        return row && row.status !== "paused" ? row : null;
+      }, "the row to leave the paused state");
+    });
+
+    // --------------------------------------------------------- 4. failures
+    await suite.test("GUI: a failing download explains itself and offers Retry", async () => {
+      origin.state.mode = "fail";
+      try {
+        await addUrl(origin.url);
+        const failed = await waitFor(async () => {
+          const rows = await readRows();
+          return rows.find((r) => r.status === "error") || null;
+        }, "a row to reach the error state", 30000);
+        assert.equal(failed.status, "error");
+        // The message must be an explanation, not a bare code.
+        assert.ok(failed.detail.length > 8, "the failure must show a reason: " + JSON.stringify(failed.detail));
+        assert.ok(!/^\s*$/.test(failed.detail), "the reason must not be blank");
+        assert.ok(failed.actions.includes("retry"),
+          "a failed task must offer Retry, got: " + JSON.stringify(failed.actions));
+      } finally {
+        origin.state.mode = "ok";
+      }
+
+      // Retry must actually clear the error and finish. The row is tracked by
+      // id: waiting for "some row is complete" would be satisfied by an
+      // earlier task and would prove nothing about this one.
+      const errored = (await readRows()).find((r) => r.status === "error");
+      assert.ok(errored, "an errored row must be present to retry");
+      assert.equal(await clickActionById(errored.id, "retry"), "clicked");
+      const recovered = await waitFor(async () => {
+        const rows = await readRows();
+        const row = rows.find((r) => r.id === errored.id);
+        return row && row.status === "complete" ? row : null;
+      }, "the retried task to complete", 40000);
+      assert.equal(recovered.status, "complete", "Retry must clear the error and finish the task");
+      assert.ok(recovered.detail.length > 0, "a recovered row must show a result");
+    });
+
+    // ----------------------------------------------------------- 5. refresh
+    await suite.test("GUI: reloading the page keeps every task and its state", async () => {
+      // Manufacture a task in each terminal state, so the reload has both a
+      // success and a failure that must survive it. Relying on whatever the
+      // earlier steps happened to leave behind made this test depend on their
+      // ordering rather than on the behaviour under test.
+      // Rows are tracked by the id that appears after each add: the saved file
+      // name comes from the origin's Content-Disposition, so it is the same for
+      // every task here and cannot identify one.
+      const idsBefore = new Set((await readRows()).map((r) => r.id));
+      const newRowMatching = async (predicate, what, timeoutMs = 40000) => waitFor(async () => {
+        const rows = await readRows();
+        return rows.find((r) => !idsBefore.has(r.id) && predicate(r)) || null;
+      }, what, timeoutMs);
+
+      origin.state.mode = "fail";
+      try {
+        await addUrl(origin.url);
+        await newRowMatching((r) => r.status === "error", "a failing task to settle");
+      } finally {
+        origin.state.mode = "ok";
+      }
+      await addUrl(origin.url);
+      await newRowMatching((r) => r.status === "complete", "the second completed task");
+
+      // Let everything settle: a task that is still transferring may
+      // legitimately move on while the page reloads, and comparing two moving
+      // snapshots would be flaky rather than meaningful.
+      await waitFor(async () => {
+        const rows = await readRows();
+        return rows.every((r) => r.status === "complete" || r.status === "error") ? rows : null;
+      }, "all tasks to settle before the reload", 40000);
+
+      const before = await readRows();
+      assert.ok(before.length >= 3, "the earlier steps must have left tasks behind");
+      const snapshot = (rows) => rows.map((r) => r.name + "=" + r.status).sort();
+      const beforeSnapshot = snapshot(before);
+      assert.ok(before.some((r) => r.status === "error"), "an errored task must be present to prove it survives");
+      assert.ok(before.some((r) => r.status === "complete"), "a completed task must be present");
+
+      await cdp.send("Page.reload", { ignoreCache: true });
+      await waitFor(() => cdp.eval("document.readyState === 'complete'"), "the page to reload");
+      await waitFor(() => cdp.eval("!!(window.__DOWNLOADX__ && window.__DOWNLOADX__.token)"), "the token after reload");
+      const after = await waitFor(async () => {
+        const r = await readRows();
+        return r.length >= before.length ? r : null;
+      }, "the task list to come back after a reload");
+
+      assert.deepEqual(snapshot(after), beforeSnapshot,
+        "every task must keep its name and status across a reload");
+      // The detail column is rendered from stored data, so a task that still
+      // shows a reason after a reload proves the error text was persisted
+      // rather than merely held in a page variable.
+      const erroredBefore = before.find((r) => r.status === "error");
+      const erroredAfter = after.find((r) => r.name === erroredBefore.name);
+      assert.ok(erroredAfter, "the errored task must still be listed");
+      assert.ok(erroredAfter.detail.length > 0, "the persisted error must still be shown");
+    });
+
+    // ------------------------------------------------------------ 6. delete
+    await suite.test("GUI: Delete removes the row and keeps the file on disk", async () => {
+      const before = await readRows();
+      const target = before.find((r) => r.status === "complete");
+      assert.ok(target, "a completed task is needed to check the file is kept");
+
+      // confirm() returns false here, which is the "keep the file" answer.
+      await cdp.eval("window.confirm = () => false;");
+      assert.equal(await clickActionById(target.id, "remove"), "clicked");
+      const after = await waitFor(async () => {
+        const rows = await readRows();
+        return rows.some((r) => r.id === target.id) ? null : rows;
+      }, "the row to disappear");
+      assert.ok(!after.some((r) => r.id === target.id), "the deleted row must be gone");
+
+      // The downloaded file itself must still exist: Del is a list operation.
+      const files = await fsp.readdir(outDir);
+      assert.ok(files.length > 0, "removing a task from the list must not delete the file");
+    });
+
+    // ------------------------------------------- unknown length honesty (B7)
+    await suite.test("GUI: an unknown-length download shows bytes, never a fake percentage", async () => {
+      // The origin sends no Content-Length, so there is no denominator. The
+      // row must say so instead of drawing 0% or 100%.
+      const chunked = await startChunkedOrigin();
+      try {
+        await addUrl(chunked.url);
+        const row = await waitFor(async () => {
+          const rows = await readRows();
+          return rows.find((r) => /unknown-length\.bin/.test(r.name)) || null;
+        }, "the chunked download to appear", 30000);
+
+        // While running, or afterwards: either way no fabricated percentage.
+        const seen = await waitFor(async () => {
+          const rows = await readRows();
+          return rows.find((r) => /unknown-length\.bin/.test(r.name)) || null;
+        }, "the chunked row", 5000);
+        assert.ok(!/100\s*%/.test(seen.progress) || /unknown/i.test(seen.progress),
+          "an unknown length must not be shown as a completed percentage: " + seen.progress);
+
+        const finished = await waitFor(async () => {
+          const rows = await readRows();
+          const r = rows.find((x) => /unknown-length\.bin/.test(x.name));
+          return r && r.status === "complete" ? r : null;
+        }, "the chunked download to complete", 30000);
+        assert.ok(/unknown/i.test(finished.progress),
+          "the finished row must still say the total length was unknown: " + finished.progress);
+        assert.ok(/%/.test(finished.progress) === false,
+          "no percentage may be shown for a transfer with no declared length: " + finished.progress);
+      } finally {
+        await chunked.close();
+      }
+    });
+
+    // --------------------------------------------------- queue reorder entry
+    await suite.test("GUI: a dragged row changes the persisted queue order", async () => {
+      // The reorder API existed with no way to reach it from the interface, so
+      // the button was effectively dead. This drives the same code path the
+      // drag handler uses.
+      await addUrl(origin.url + "?a=1");
+      await addUrl(origin.url + "?b=2");
+
+      /**
+       * Wait for a row count that has stopped changing.
+       *
+       * New tasks are prepended, so a task created a moment ago can appear
+       * between reading the list and performing the drag and shift every index.
+       * Waiting for the count to hold still is what makes the drag land where
+       * the test thinks it will.
+       */
+      const stableRows = async (what, timeoutMs = 60000) => {
+        const started = Date.now();
+        let last = -1;
+        let stableFor = 0;
+        while (Date.now() - started < timeoutMs) {
+          const r = await readRows();
+          const settled = r.every((x) => x.status === "complete" || x.status === "error");
+          if (r.length >= 2 && settled && r.length === last) {
+            stableFor++;
+            if (stableFor >= 3) return r;   // three consecutive identical reads
+          } else {
+            stableFor = 0;
+          }
+          last = r.length;
+          await new Promise((r2) => setTimeout(r2, 250));
+        }
+        throw new Error("timed out waiting for " + what);
+      };
+
+      const before = await stableRows("a stable list to reorder");
+      const beforeIds = before.map((r) => r.id);
+      const dragId0 = beforeIds[0];
+      const targetId = beforeIds[1];
+
+      // Perform the drop the drag handler performs, addressed by task id so the
+      // operation cannot land on the wrong row.
+      const moved = await cdp.eval(`(async () => {
+        const from = document.querySelector('tr[data-id="${dragId0}"]');
+        const to = document.querySelector('tr[data-id="${targetId}"]');
+        if (!from || !to) return { error: "a row disappeared before the drag" };
+        const dt = new DataTransfer();
+        from.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+        to.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+        to.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+        from.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
+        await new Promise((r) => setTimeout(r, 900));
+        return { ids: [...document.querySelectorAll("#list tbody tr")].map((tr) => tr.dataset.id) };
+      })()`);
+      assert.ok(!moved.error, "both rows must still be present: " + moved.error);
+
+      const afterIndex = moved.ids.indexOf(dragId0);
+      assert.equal(afterIndex, 1, "the dragged row must land at the drop target's position");
+      assert.equal(moved.ids[0], targetId, "the drop target must move up into the vacated place");
+
+      // The new order must be what the daemon returns after a reload, not just
+      // a client-side rearrangement.
+      await cdp.send("Page.reload", { ignoreCache: true });
+      await waitFor(() => cdp.eval("document.readyState === 'complete'"), "the reload after a reorder");
+      await waitFor(() => cdp.eval("!!(window.__DOWNLOADX__ && window.__DOWNLOADX__.token)"), "the token after the reorder reload");
+      const persisted = await waitFor(async () => {
+        const r = await cdp.eval(`[...document.querySelectorAll("#list tbody tr")].map((tr) => tr.dataset.id)`);
+        return r.length >= moved.ids.length ? r : null;
+      }, "the order to come back after a reload");
+      assert.equal(persisted.indexOf(dragId0), 1, "the reordered position must survive a reload");
+      assert.equal(persisted[0], targetId, "the row that moved up must still be first after a reload");
+    });
+
+    // -------------------------------------------------- concurrency setting
+    await suite.test("GUI: settings saved from the form take effect", async () => {
+      await cdp.eval(`(() => {
+        document.querySelector('.tabs button[data-tab="settings"]').click();
+        const el = document.getElementById("cfg-maxConnections");
+        el.value = "3";
+        document.getElementById("btnSaveCfg").click();
+        return true;
+      })()`);
+      await waitFor(() => cdp.eval(`/Settings saved|saved/i.test(document.getElementById("toast").textContent)`), "the saved toast");
+      await waitFor(() => daemon.config.get("maxConnections") === 3, "the setting to reach the daemon config");
+      assert.equal(daemon.config.get("maxConnections"), 3, "the form must write through to the stored config");
+    });
+
+    // -------------------------------------------- discover tab can submit
+    await suite.test("GUI: the Discover tab lists a media stream and can queue it", async () => {
+      const mediaOrigin = await startMediaPageOrigin();
+      try {
+        await cdp.eval(`(() => {
+          document.querySelector('.tabs button[data-tab="discover"]').click();
+          const el = document.getElementById("disc-url");
+          el.value = ${JSON.stringify(mediaOrigin.pageUrl)};
+          document.getElementById("btnSniff").click();
+          return true;
+        })()`);
+        const status = await waitFor(async () => {
+          const t = await cdp.eval(`document.getElementById("disc-status").textContent`);
+          return /candidate/i.test(t) ? t : null;
+        }, "the Discover tab to find the stream", 30000);
+        assert.match(status, /candidate/i, "the panel must report what it found: " + status);
+
+        const queued = await cdp.eval(`(() => {
+          const btn = [...document.querySelectorAll("#disc-results button")].find((b) => b.textContent === "Download");
+          if (!btn) return "no-button";
+          btn.click();
+          return "clicked";
+        })()`);
+        assert.equal(queued, "clicked", "the discovered stream must offer a Download button");
+        await waitFor(() => cdp.eval(`document.getElementById("disc-results").textContent.includes("Queued")`),
+          "the button to confirm the queue");
+      } finally {
+        await mediaOrigin.close();
+      }
+    });
+  } finally {
+    cdp?.close();
+    await launched.close();
+    await origin.close();
+    await daemon.stop();
+    if (previousHome === undefined) delete process.env.DOWNLOADX_HOME;
+    else process.env.DOWNLOADX_HOME = previousHome;
+    await fsp.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+
+  return { executed: true, browser: browser.name, reason: null };
+}
+
+/** An origin that never declares a length, to exercise honest progress. */
+async function startChunkedOrigin() {
+  const httpMod = await import("node:http");
+  const srv = httpMod.createServer((req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": 'attachment; filename="unknown-length.bin"',
+    });
+    let i = 0;
+    const tick = () => {
+      if (i++ >= 24) { res.end(); return; }
+      if (res.destroyed) return;
+      res.write(Buffer.alloc(16 * 1024, 0x33));
+      setTimeout(tick, 40);
+    };
+    tick();
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return {
+    url: "http://127.0.0.1:" + srv.address().port + "/unknown-length.bin",
+    close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(() => r(undefined)); setTimeout(() => r(undefined), 1500); }),
+  };
+}
+
+/** A page with an HLS stream on it, for the Discover tab. */
+async function startMediaPageOrigin() {
+  const httpMod = await import("node:http");
+  const seg = Buffer.alloc(32 * 1024, 0x44);
+  const srv = httpMod.createServer((req, res) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/page") {
+      const html = '<html><body><h1>watch</h1><video src="/media/stream.m3u8"></video>' +
+        '<a href="/files/thing.zip">thing.zip</a></body></html>';
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(html) });
+      res.end(html);
+      return;
+    }
+    if (u.pathname === "/media/stream.m3u8") {
+      const body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+        "#EXTINF:4.0,\n/media/seg/0\n#EXTINF:4.0,\n/media/seg/1\n#EXT-X-ENDLIST\n";
+      res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    if (u.pathname.startsWith("/media/seg/")) {
+      res.writeHead(200, { "Content-Type": "video/mp2t", "Content-Length": seg.length });
+      res.end(seg);
+      return;
+    }
+    if (u.pathname === "/files/thing.zip") {
+      const zip = Buffer.alloc(256 * 1024, 0x50);
+      res.writeHead(200, { "Content-Type": "application/zip", "Content-Length": zip.length });
+      res.end(zip);
+      return;
+    }
+    res.writeHead(404, { "Content-Length": "0" });
+    res.end();
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const origin = "http://127.0.0.1:" + srv.address().port;
+  return {
+    pageUrl: origin + "/page",
+    close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(() => r(undefined)); setTimeout(() => r(undefined), 1500); }),
+  };
+}

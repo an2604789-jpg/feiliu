@@ -1,0 +1,14 @@
+﻿
+  Electron desktop window end-to-end
+
+  Electron desktop window end-to-end
+    PASS  E2E: seed phase ran and the app exited cleanly
+    PASS  E2E: a download added from the desktop UI completes
+    PASS  E2E: pause and resume work from the desktop UI
+    PASS  E2E: a failing download is shown and Retry recovers it
+    PASS  E2E: a setting changed in the UI is saved
+    PASS  E2E: the owned daemon shut down when the app closed (no orphan)
+    PASS  E2E: the queue and setting survive closing and reopening the app
+    PASS  E2E: completed files were written into the chosen folder
+
+  8 passed, 0 failed

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DownloadX 启动中</title>
+<style>
+  :root {
+    --bg: #f4f6fa; --card: #ffffff; --line: #e4e8f0; --fg: #1f2733;
+    --dim: #6b7588; --accent: #2563eb; --accent-weak: #eaf1ff;
+    --err: #dc2626; --err-weak: #fdecec;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    width: 460px; max-width: 92vw; background: var(--card);
+    border: 1px solid var(--line); border-radius: 14px;
+    padding: 34px 34px 28px; box-shadow: 0 12px 40px rgba(31, 39, 51, .08);
+    text-align: center;
+  }
+  .logo {
+    width: 58px; height: 58px; margin: 0 auto 16px; border-radius: 15px;
+    background: linear-gradient(135deg, #2f6fed, #1d4ed8);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 28px; letter-spacing: .5px;
+  }
+  h1 { font-size: 19px; margin: 0 0 6px; font-weight: 650; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 22px; }
+
+  .spinner {
+    width: 30px; height: 30px; margin: 4px auto 18px;
+    border: 3px solid var(--accent-weak); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #errorBox { display: none; text-align: left; }
+  #errorBox .etitle {
+    color: var(--err); font-weight: 600; font-size: 14px; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #errorMsg {
+    background: var(--err-weak); border: 1px solid #f6c9c9; color: #7a1f1f;
+    border-radius: 9px; padding: 11px 13px; font-size: 12.5px;
+    white-space: pre-wrap; word-break: break-word; max-height: 210px; overflow: auto;
+  }
+  .btns { display: flex; gap: 10px; justify-content: center; margin-top: 22px; }
+  button {
+    font: inherit; border-radius: 8px; padding: 8px 18px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--fg);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #1d4ed8; }
+  button:hover { background: #f2f5fb; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 18px; }
+  .loading-hint { color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">D</div>
+    <h1>DownloadX</h1>
+    <p class="sub">多线程下载管理器</p>
+
+    <div id="loading">
+      <div class="spinner"></div>
+      <div class="loading-hint" id="phase">正在启动本地下载服务…</div>
+    </div>
+
+    <div id="errorBox">
+      <div class="etitle">● 无法启动下载服务</div>
+      <div id="errorMsg"></div>
+      <div class="btns">
+        <button class="primary" id="btnRetry">重试</button>
+        <button id="btnLog">打开日志目录</button>
+      </div>
+    </div>
+
+    <div class="hint" id="footHint">下载服务仅在本机运行，不会访问外部网络。</div>
+  </div>
+
+<script>
+  const loading = document.getElementById("loading");
+  const errorBox = document.getElementById("errorBox");
+  const errorMsg = document.getElementById("errorMsg");
+  const phase = document.getElementById("phase");
+
+  function showError(message) {
+    loading.style.display = "none";
+    errorBox.style.display = "block";
+    errorMsg.textContent = message || "未知错误。";
+  }
+  function showLoading(text) {
+    loading.style.display = "block";
+    errorBox.style.display = "none";
+    if (text) phase.textContent = text;
+  }
+
+  async function boot() {
+    if (!window.downloadx || !window.downloadx.ensureDaemon) {
+      showError("桌面桥接接口不可用（preload 未加载）。请重新安装应用后再试。");
+      return;
+    }
+    try {
+      const r = await window.downloadx.ensureDaemon();
+      if (!r || !r.ok) {
+        showError(r && r.message ? r.message : "启动失败，请重试。");
+      }
+      // 成功时由主进程负责加载主界面，这里保持加载态即可。
+    } catch (err) {
+      showError(err && err.message ? err.message : String(err));
+    }
+  }
+
+  document.getElementById("btnRetry").onclick = () => {
+    showLoading("正在重新启动下载服务…");
+    boot();
+  };
+  document.getElementById("btnLog").onclick = () => {
+    if (window.downloadx && window.downloadx.revealLog) window.downloadx.revealLog();
+  };
+
+  boot();
+</script>
+</body>
+</html>

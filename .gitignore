@@ -1,0 +1,31 @@
+# 依赖与构建产物(均可重建)
+node_modules/
+release/
+dist/
+
+# 运行时数据/档案(本机专属)
+electron-profile/
+Downloads/
+debug.log
+debug-launch-*.txt
+*.tmp
+
+# 施工期备份文件(历史回滚点,不入库)
+*.bak
+*.bak-*
+*bak-*
+*.pre-task*
+*.p0*-bak
+*.b0*-bak
+
+# 系统杂物
+.DS_Store
+Thumbs.db
+%SystemDrive%/
+
+# 测试运行产物(体积大,可重新生成)
+test/large-runs/
+test/external-runs/
+test/acceptance-runs*/
+test/*-runs/
+*.downloadx-part

@@ -1,0 +1,37 @@
+{
+  "name": "downloadx",
+  "version": "1.0.0",
+  "description": "Concurrent segmented download manager with queue, scheduler, browser integration and stream support",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "downloadx": "bin/downloadx.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/downloadx.mjs daemon",
+    "gui": "node bin/downloadx.mjs open",
+    "doctor": "node bin/downloadx.mjs doctor",
+    "test": "node test/run.mjs",
+    "test:large": "node test/large-file.mjs",
+    "test:large:1g": "node test/large-file.mjs --size 1G",
+    "install-extension": "node extension/install.mjs install",
+    "uninstall-extension": "node extension/install.mjs uninstall",
+    "host-status": "node extension/install.mjs status",
+    "acceptance": "node test/acceptance.mjs",
+    "acceptance:list": "node test/acceptance.mjs --list",
+    "acceptance:real": "node test/acceptance-real.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "gui",
+    "extension",
+    "test",
+    "README.md",
+    "Windows安装与首次使用.md",
+    "验收流程说明.md"
+  ]
+}

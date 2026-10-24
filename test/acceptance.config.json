@@ -1,0 +1,113 @@
+{
+  "$comment": "Acceptance suite configuration. Edit to change sizes, timeouts or which scenarios run.",
+  "version": 1,
+
+  "run": {
+    "scenarios": [
+      "large-file",
+      "range-multipart",
+      "no-range-downgrade",
+      "redirect-chain",
+      "custom-headers",
+      "interrupt-resume",
+      "rate-limit",
+      "error-retry",
+      "sha256-verify"
+    ],
+    "outputDir": "test/acceptance-runs",
+    "keepArtifacts": true,
+    "verbose": false
+  },
+
+  "limits": {
+    "scenarioTimeoutMs": 120000,
+    "largeFileBytes": 134217728,
+    "mediumFileBytes": 16777216,
+    "smallFileBytes": 1048576,
+    "rangeSegmentBytes": 2097152,
+    "rateLimitBytesPerSecond": 262144,
+    "rateLimitTolerancePct": 60,
+    "interruptAfterBytes": 4194304,
+    "redirectHops": 5,
+    "failFirstCount": 3,
+    "retryBaseMs": 200,
+    "resumeMinBytes": 1048576
+  },
+
+  "scenarios": {
+    "large-file": {
+      "title": "Large file, multi-connection",
+      "description": "A file well beyond the segment size, fetched with several connections, verified byte-for-byte against a single-connection fetch.",
+      "bytes": 134217728,
+      "connections": 8,
+      "segmentBytes": 8388608,
+      "checks": ["sha256", "size", "multi-connection-used", "matches-single-stream"]
+    },
+    "range-multipart": {
+      "title": "Range support, multipart",
+      "description": "Origin honours byte ranges; the transfer must issue several ranged requests and assemble them correctly.",
+      "bytes": 16777216,
+      "connections": 4,
+      "segmentBytes": 4194304,
+      "checks": ["sha256", "size", "ranged-requests-gte-connections"]
+    },
+    "no-range-downgrade": {
+      "title": "No Range: fall back to a single stream",
+      "description": "Origin advertises Accept-Ranges but answers 200 to every ranged request. The engine must detect this, discard the torn attempt and re-download as one stream.",
+      "bytes": 4194304,
+      "liesAboutRange": true,
+      "connections": 4,
+      "segmentBytes": 1048576,
+      "checks": ["sha256", "size", "downgraded", "no-splitting"]
+    },
+    "redirect-chain": {
+      "title": "Redirect chain",
+      "description": "Five 302 hops before the body. The final bytes must be identical to a direct fetch.",
+      "bytes": 2097152,
+      "hops": 5,
+      "checks": ["sha256", "size", "followed-all-hops"]
+    },
+    "custom-headers": {
+      "title": "Custom request headers",
+      "description": "Origin refuses requests missing an expected header. With the header supplied the download must succeed; without it, it must fail rather than silently save an error page.",
+      "bytes": 1048576,
+      "header": { "x-acceptance-token": "let-me-in" },
+      "checks": ["sha256", "size", "rejected-without-header", "succeeded-with-header"]
+    },
+    "interrupt-resume": {
+      "title": "Interrupt and resume",
+      "description": "Stop the transfer partway, keep the per-segment state, then resume. The resumed result must match the uninterrupted hash, and the origin must not re-serve the whole file. The origin is throttled so the interruption reliably lands mid-transfer.",
+      "bytes": 16777216,
+      "connections": 4,
+      "segmentBytes": 4194304,
+      "bytesPerSecond": 2097152,
+      "interruptAfterBytes": 4194304,
+      "checks": ["sha256", "size", "resumed-from-state", "bytes-resent-lt-total"]
+    },
+    "rate-limit": {
+      "title": "Rate limiting",
+      "description": "A per-task speed cap must hold the observed throughput near the configured rate.",
+      "bytes": 8388608,
+      "connections": 4,
+      "speedLimit": 262144,
+      "tolerancePct": 60,
+      "checks": ["sha256", "size", "throughput-within-tolerance"]
+    },
+    "error-retry": {
+      "title": "Transient errors and retry",
+      "description": "The origin fails the first three RANGED requests with 503 (transfer phase), then serves normally. The engine must retry and still complete with the correct hash.",
+      "bytes": 4194304,
+      "failRangedFirst": 3,
+      "failStatus": 503,
+      "retryBaseMs": 200,
+      "checks": ["sha256", "size", "retried", "completed-despite-failures"]
+    },
+    "sha256-verify": {
+      "title": "SHA-256 verification",
+      "description": "The origin publishes a Content-Digest. The engine must verify the assembled file against it, and reject a file that does not match.",
+      "bytes": 4194304,
+      "digest": true,
+      "checks": ["sha256", "origin-digest-verified", "mismatch-rejected"]
+    }
+  }
+}

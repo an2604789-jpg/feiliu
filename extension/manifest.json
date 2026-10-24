@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "飞流下载 FeiLiu",
+  "version": "1.0.0",
+  "description": "Send downloads to the FeiLiu (飞流) daemon and catch media streams.",
+  "permissions": [
+    "cookies",
+    "contextMenus",
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "webRequest",
+    "notifications",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "injected-sniffer.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "js": [
+        "content.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "all_frames": false,
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected-sniffer.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Download with downloadx",
+    "default_icon": "icon.png"
+  },
+  "commands": {
+    "download-with-downloadx": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+D"
+      },
+      "description": "Download the current page with downloadx"
+    }
+  },
+  "icons": {
+    "128": "icon.png"
+  }
+}

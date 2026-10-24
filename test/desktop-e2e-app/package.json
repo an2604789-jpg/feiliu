@@ -1,0 +1,8 @@
+{
+  "name": "downloadx-desktop-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Test-only Electron entry that loads the desktop E2E harness main script. Not shipped.",
+  "main": "./main.cjs"
+}

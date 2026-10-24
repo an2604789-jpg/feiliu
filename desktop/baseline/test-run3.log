@@ -1,0 +1,770 @@
+﻿
+  downloadx self-test
+
+  Utilities
+    PASS  parseSize understands units
+    PASS  formatBytes / formatDuration are stable
+    PASS  sanitizeName strips characters Windows rejects
+    PASS  filenameFromUrl / filenameFromDisposition
+
+  Segment planning
+    PASS  plan covers the resource exactly once
+    PASS  small files are not split
+    PASS  segment count respects both limits
+    PASS  splitSegment preserves coverage
+
+  Classification and naming
+    PASS  extension detection handles URLs, queries and dots
+    PASS  categorize routes known types
+    PASS  resolveDirectory honours categorizeByType
+    PASS  uniquePath avoids collisions
+
+  Site rules
+    PASS  glob matching is host-safe
+    PASS  exceptions and per-host overrides
+
+  Configuration
+    PASS  defaults are sane and paths resolve
+    PASS  values are clamped and persisted
+    PASS  a corrupt config falls back to defaults
+
+  Scheduler
+    PASS  clock parsing and windows
+    PASS  nextOccurrence rolls to tomorrow when past
+    PASS  tick fires once per minute per schedule
+
+  Download engine
+    PASS  probe reports size, ranges, type and filename
+    PASS  probe detects an origin that ignores Range
+    PASS  probe follows redirects and reads Content-Disposition
+    PASS  single connection is byte-exact
+    PASS  multi-connection matches single-connection output
+    PASS  workers never claim the same segment twice
+    PASS  one ranged request per segment on a clean run
+    PASS  temporary state is removed on success
+
+  Resume and recovery
+    PASS  interrupted download resumes to the correct bytes
+    PASS  stale partial data is discarded when the revision changed
+    PASS  recovers from an origin that drops the socket mid-body
+    PASS  short body is completed by re-requesting the remainder
+    PASS  downgrades to a single stream when Range is ignored
+
+  Rate limiting
+    PASS  speed limit slows the transfer down
+
+  HLS streams
+    PASS  parses a master playlist and ranks variants
+    PASS  parses a media playlist with keys and init segment
+    PASS  attribute parsing handles quoted commas
+
+  DASH manifests
+    PASS  parses durations
+    PASS  expands segment templates
+    PASS  parses an MPD and picks the best representation
+
+  FTP protocol
+    PASS  URL parsing extracts host, path and credentials
+    PASS  control channel parses multi-line replies
+    PASS  FTP login failure surfaces the server reply
+
+  Queue manager
+    PASS  adds, lists and orders tasks
+    PASS  state transitions are validated
+    PASS  queue persistence round-trips
+    PASS  tasks that were active on crash come back paused
+    PASS  concurrency capacity is enforced
+
+  HTTP API
+    PASS  rejects requests without a valid token
+    PASS  serves status and task list
+    PASS  rejects a task with no URL
+    PASS  adds a task and completes it end to end
+    PASS  pause, resume and remove work through the API
+    PASS  unknown routes and methods are refused
+    PASS  config can be read and patched
+    PASS  probe endpoint reports without downloading
+    PASS  probe endpoint honours the exception list
+    PASS  static GUI is served with a token injected
+    PASS  path traversal cannot escape the GUI directory
+    PASS  clear-completed removes finished tasks
+
+  Stream download end to end
+    PASS  downloads an HLS stream by stitching its segments
+    PASS  picker can choose a specific variant
+
+  Browser integration
+    PASS  extension manifest is valid MV3 with nativeMessaging
+    PASS  native host frames replies with a length prefix
+    PASS  native host rejects an unknown message type
+    PASS  install script runs when invoked directly
+    PASS  install writes manifests whose path exists
+    PASS  native host registration reports per-browser status
+    PASS  a placeholder registration is not reported as usable
+
+  Queue control
+    PASS  starting a paused or failed task actually runs it
+    PASS  an explicit start overrides a paused queue
+    PASS  two transfers aimed at one file do not corrupt each other
+
+  Installation and diagnosis
+    PASS  doctor reports a working runtime without leaking the token
+    PASS  doctor fails and explains an unusable download folder
+    PASS  doctor flags a stale runtime file from a dead daemon
+    PASS  discarding a transfer never deletes a directory at the target
+
+  URL history
+    PASS  a secret in a URL is never written to the history file
+    PASS  history survives a reload and de-duplicates by URL
+    PASS  the history file stays bounded
+    PASS  clearing history is explicit and removes the file
+    PASS  the daemon records queued URLs and offers them back
+
+  SOCKS5 proxy
+    PASS  SOCKS5 is recognised and HTTP proxy URLs are not
+    PASS  a download completes through a SOCKS5 proxy
+    PASS  SOCKS5 username/password authentication is performed
+    PASS  a SOCKS5 proxy that refuses every method is reported, not retried forever
+    PASS  a credential-requiring SOCKS5 proxy without credentials says so
+    PASS  an unreachable SOCKS5 destination reports why
+    PASS  a malformed SOCKS5 proxy URL is rejected clearly
+
+  Extension protocol
+    PASS  the native host reports 'daemon not running' with a fix
+    PASS  the native host rejects an invalid message and stays alive
+    PASS  the native host rejects a protocol version it cannot speak
+    PASS  an invalid JSON frame is answered without crashing the host
+    PASS  a repeated media URL is queued once, not once per event
+    PASS  the native host queues a real download into the daemon
+    PASS  task cookies and referer reach the origin
+    PASS  credentials become a Basic authorization header
+    PASS  an explicitly set header wins over the convenience fields
+    PASS  buildRequestHeaders does not mutate the task's own headers
+    PASS  a cookie never reaches the daemon log
+
+  Browser GUI lifecycle
+    PASS  GUI: a URL typed into the box becomes a task on screen
+    PASS  GUI: Pause stops the transfer and Resume continues it
+    PASS  GUI: a failing download explains itself and offers Retry
+    PASS  GUI: reloading the page keeps every task and its state
+    PASS  GUI: Delete removes the row and keeps the file on disk
+    PASS  GUI: an unknown-length download shows bytes, never a fake percentage
+    PASS  GUI: a dragged row changes the persisted queue order
+    PASS  GUI: settings saved from the form take effect
+    PASS  GUI: the Discover tab lists a media stream and can queue it
+        (browser: Edge)
+
+  Command line
+    PASS  argument parsing handles all documented flags
+    PASS  connection count is clamped to 1..32
+    PASS  unknown options are rejected
+    PASS  bare hosts get an https scheme
+
+  Site grabber
+    PASS  extractLinks finds attributes and skips non-resources
+    PASS  grabPage lists a real page and dedupes the page URL
+    PASS  grabPage mediaOnly keeps only media
+    PASS  grabPage extension filter works
+    PASS  a direct file URL is returned as the resource
+    PASS  grabAndQueue queues every link
+
+  Media sniffer
+    PASS  classify recognises stream and media URLs
+    PASS  sniffPage finds HLS and DASH candidates on a page
+    PASS  inspectStream describes an HLS master playlist
+    PASS  inspectStream counts segments in a media playlist
+    PASS  inspectStream describes a DASH manifest
+    PASS  inspectStream probes a progressive file
+    PASS  inspectStream rejects a non-media URL
+
+  Grabber and sniffer over the API
+    PASS  POST /api/grab lists resources without queueing
+    PASS  POST /api/grab with queue=true enqueues them
+    PASS  POST /api/sniff returns candidates
+    PASS  POST /api/inspect-stream describes a stream
+    PASS  grab and sniff reject a missing url
+
+  Track selection and merging
+    PASS  SegmentTimeline drives segment enumeration
+    PASS  a timeline with a repeat attribute expands correctly
+    PASS  initialization names expand $RepresentationID$
+    PASS  a real ffmpeg-style DASH package downloads and merges
+    PASS  audio representations are identified
+    PASS  selectTracks returns both video and audio
+    PASS  pickBestRepresentation never picks an audio track
+        (ffmpeg: ffmpeg)
+    PASS  ffmpeg is discoverable on this host
+    PASS  mergeTracks with a single track just renames it
+    PASS  mergeTracks reports honestly when ffmpeg is missing
+    PASS  DASH with separate audio fetches and merges both tracks
+    PASS  a failed merge keeps the tracks and reports the real output
+    PASS  a successful merge removes the intermediate track files
+    PASS  DASH videoOnly skips the audio track
+
+  Clipboard watcher
+    PASS  clipboard watcher honours the setting and dedupes
+    PASS  URL_RE accepts http/ftp and rejects prose
+
+  Capture proxy
+    PASS  response classification is conservative
+    PASS  confidence reflects how certain the classification is
+    PASS  filename comes from Content-Disposition then the URL
+    PASS  proxy forwards plain HTTP byte-for-byte and captures the file
+    PASS  the same URL is only offered once
+    PASS  CONNECT tunnels opaque HTTPS without decrypting
+    PASS  openssl is discoverable and a CA can be created
+    PASS  leaf certificates are issued per host and cached
+    PASS  MITM mode decrypts HTTPS and captures the download
+    PASS  proxy start/stop is idempotent and reports state
+
+  Integrity verification and per-server limits
+    PASS  digest headers are parsed across all three spellings
+    PASS  origin digest is verified against the downloaded file
+    PASS  a mismatched digest discards the download
+    PASS  an inconsistent origin is caught and re-downloaded as one stream
+    PASS  a consistent origin passes the boundary check
+    PASS  per-server connection cap is enforced
+    PASS  scheduled bandwidth windows reach the rate limiter
+
+  Adaptive concurrency and worker health
+    PASS  adaptive gate halves on a throttle and recovers one at a time
+    PASS  repeated throttles in one episode do not halve twice
+    PASS  an explicit Retry-After is honoured as the cooldown
+    PASS  throttle status codes are recognised
+    PASS  the gate admits only up to its current cap
+    PASS  worker health flags a stalled connection
+    PASS  a worker waiting on the rate limiter is never judged slow
+    PASS  worker health flags a connection far below the mean
+    PASS  a tiny text body for a binary name is flagged as suspicious
+    PASS  concurrent probes to one host are serialised
+    PASS  the gate survives a throttling origin and still finishes correctly
+
+  Native MP4 muxing
+    PASS  box listing walks a real init segment
+    PASS  a non-MP4 buffer is not mistaken for one
+    PASS  the muxer joins two fragmented-MP4 tracks into one file
+    PASS  muxTracks handles a single track
+    PASS  muxNatively returns null for input it cannot handle
+
+  Dynamic segmentation
+    PASS  a slow origin lets an idle worker share a long segment
+    PASS  the downloader passes probe range support to the engine
+    PASS  a range-less origin never enables splitting
+    PASS  splitting is disabled once the origin ignores Range
+
+  Acceptance-suite regressions
+    PASS  prepareTarget preserves existing data on resume
+    PASS  prepareTarget grows but never shrinks an existing file
+    PASS  a HEAD request reaches the origin as HEAD
+    PASS  probing a large resource does not transfer its body
+    PASS  transient failures at probe time are retried
+    PASS  a definitive 404 at probe time is not retried
+    PASS  the engine honours the configured retry policy
+    PASS  resuming reuses on-disk progress instead of restarting
+
+  P0-A media routing and P0-B unknown length
+    PASS  detectKind identifies media URLs and leaves HTTP alone
+    PASS  the streaming path writes the exact bytes of a chunked response
+    PASS  a cancelled stream leaves no file behind
+    PASS  an HTTP error on the streaming path creates no file
+    PASS  the streaming path publishes atomically over an existing file
+    PASS  a known-length download still uses the segmented engine
+    PASS  get --kind hls produces media, not the playlist text
+    PASS  get auto-detects an HLS URL without --kind
+    PASS  get --kind dash reports a merge failure instead of a false success
+    PASS  get --dry-run on a media URL transfers no fragments
+    PASS  the media path honours the task-level insecure flag
+    PASS  the media path receives the caller's abort signal
+
+  P1-A daemon lifecycle
+    PASS  the daemon entry point is executable and self-starting
+    PASS  the runtime file is validated against a live process
+    PASS  daemon shutdown removes the runtime file and exits
+
+  Media segment retry
+    PASS  a dropped connection on one HLS segment is retried
+    PASS  a 404 on a media segment is not retried
+
+  Media output path
+    PASS  get -o <full file path> writes exactly that file
+    PASS  get -o <directory> keeps the category subfolder behaviour
+    PASS  a directory target with categorizeByType off stays flat
+    PASS  auto-detected and forced HLS agree on the output path
+    PASS  auto-detected and forced DASH agree on the exact output path
+    PASS  the CLI turns -o <file> into an exact target and -o <dir> into a folder
+
+  Media rate limiting
+    PASS  the limiter paces the source, not the tail (backpressure)
+    PASS  a chunk larger than the bucket is spent, not deadlocked
+    PASS  --limit throttles an HLS download to the configured rate
+    PASS  Settings speedLimit applies when the task has none
+    PASS  concurrency does not multiply the cap
+    PASS  DASH video and audio share one bucket
+    PASS  an HLS audio rendition draws from the same bucket
+    PASS  no limit means no throttling
+
+  Redirect credentials
+    PASS  a same-origin redirect keeps the request headers
+    PASS  a cross-origin redirect drops every credential header
+    PASS  credentials stay stripped after a chain returns to the origin
+    PASS  a download through a cross-origin redirect stays correct and unleaked
+    PASS  sameOrigin compares scheme, host and effective port
+    PASS  the headers the product builds are the ones stripped
+
+  Media TLS --insecure
+    PASS  default settings reject the self-signed media origin
+    PASS  --insecure downloads the whole HLS chain with correct bytes
+    PASS  --insecure reaches the DASH manifest, init segment and fragments
+    PASS  --insecure on the CLI downloads the HTTPS playlist and fragments
+
+  Exact target and overwrite policy
+    PASS  exact target with rename keeps the existing file
+    PASS  exact target with skip fails and keeps the original bytes
+    PASS  exact target with overwrite replaces the file
+    PASS  exact target with a fresh path is unaffected by the policy
+    PASS  DASH honours the overwrite policy on an exact target
+    PASS  the CLI refuses to overwrite with -o <file> under the skip policy
+    PASS  the CLI reports the renamed landing place under the rename policy
+    PASS  concurrent exact targets never collide on the same name
+
+  Cancel during body read
+    PASS  readBody rejects promptly when the body stalls
+    PASS  an HLS fragment cancelled mid-body stops at once and is not retried
+    PASS  a DASH fragment cancelled mid-body stops at once and is not retried
+    PASS  abort listeners are released on success, error and cancel
+    PASS  cancel latency is measured from the abort() call
+
+  Scheduled speed limit
+    PASS  the scheduler reaches a real Downloader bucket
+    PASS  a window opened before the start throttles a running HLS task
+    PASS  a window is a total across concurrent tasks, not per task
+    PASS  a rate change reaches a transfer that is already running
+    PASS  a task limit and a window compose, tightest wins
+    PASS  changing the rate under load neither deadlocks nor stalls
+
+  Unknown-length rate limiting
+    PASS  a chunked download obeys the scheduled window
+    PASS  concurrent chunked downloads share one window bucket
+    PASS  a chunked transfer survives rate changes while reading
+
+  Output reservation
+    PASS  concurrent rename tasks each get their own file
+    PASS  concurrent skip tasks fail cleanly and do not block the next task
+    PASS  a lock timeout frees its place in the queue
+    PASS  a failure while reserving releases the lock
+    PASS  DASH and HLS concurrency share the same reservation guarantee
+
+  Output lock mutex
+    PASS  a timeout does not unseat the current holder
+    PASS  a queued waiter can be cancelled
+    PASS  the same path can be retried after timeout, cancel and error
+    PASS  cancelling a task queued behind the output lock stops it
+
+  Derived path conflicts
+    PASS  a media claim blocks a plain download on every derived name
+    PASS  a plain claim blocks a later media task on its derived paths
+    PASS  HLS and DASH run correctly beside a conflicting plain download
+    PASS  overwrite never replaces a path another transfer is using
+
+  Case-insensitive path identity
+    PASS  the low-level lock stays FIFO across case variants
+    PASS  pathKey folds case only where the volume does
+    PASS  the case-insensitivity assumption matches the actual volume
+    PASS  rename waits for a live case variant, then picks a disjoint name
+    PASS  a case variant of a live target is refused at once (skip)
+    PASS  overwrite refuses a live case variant at once
+    PASS  a retry takes over its own stale reservation, another task still may not
+    PASS  a failed task retried under the same id succeeds with correct bytes
+    PASS  an identical-spelling overwrite queues, then overwrites
+    PASS  a live case variant keeps its derived names
+    PASS  the suite does not tamper with global TLS state
+
+  P1-C gap coverage
+    PASS  repeated interruptions still converge on the correct bytes
+    PASS  maxConnectionsPerServer is counted across tasks
+    PASS  a write failure surfaces instead of reporting success
+    PASS  an aborted segmented transfer keeps resumable state
+
+  Utilities
+    PASS  parseSize understands units
+    PASS  formatBytes / formatDuration are stable
+    PASS  sanitizeName strips characters Windows rejects
+    PASS  filenameFromUrl / filenameFromDisposition
+
+  Segment planning
+    PASS  plan covers the resource exactly once
+    PASS  small files are not split
+    PASS  segment count respects both limits
+    PASS  splitSegment preserves coverage
+
+  Classification and naming
+    PASS  extension detection handles URLs, queries and dots
+    PASS  categorize routes known types
+    PASS  resolveDirectory honours categorizeByType
+    PASS  uniquePath avoids collisions
+
+  Site rules
+    PASS  glob matching is host-safe
+    PASS  exceptions and per-host overrides
+
+  Configuration
+    PASS  defaults are sane and paths resolve
+    PASS  values are clamped and persisted
+    PASS  a corrupt config falls back to defaults
+
+  Scheduler
+    PASS  clock parsing and windows
+    PASS  nextOccurrence rolls to tomorrow when past
+    PASS  tick fires once per minute per schedule
+
+  Download engine
+    PASS  probe reports size, ranges, type and filename
+    PASS  probe detects an origin that ignores Range
+    PASS  probe follows redirects and reads Content-Disposition
+    PASS  single connection is byte-exact
+    PASS  multi-connection matches single-connection output
+    PASS  workers never claim the same segment twice
+    PASS  one ranged request per segment on a clean run
+    PASS  temporary state is removed on success
+
+  Resume and recovery
+    PASS  interrupted download resumes to the correct bytes
+    PASS  stale partial data is discarded when the revision changed
+    PASS  recovers from an origin that drops the socket mid-body  (2014ms)
+    PASS  short body is completed by re-requesting the remainder  (777ms)
+    PASS  downgrades to a single stream when Range is ignored
+
+  Rate limiting
+    PASS  speed limit slows the transfer down  (1034ms)
+
+  HLS streams
+    PASS  parses a master playlist and ranks variants
+    PASS  parses a media playlist with keys and init segment
+    PASS  attribute parsing handles quoted commas
+
+  DASH manifests
+    PASS  parses durations
+    PASS  expands segment templates
+    PASS  parses an MPD and picks the best representation
+
+  FTP protocol
+    PASS  URL parsing extracts host, path and credentials
+    PASS  control channel parses multi-line replies
+    PASS  FTP login failure surfaces the server reply
+
+  Queue manager
+    PASS  adds, lists and orders tasks
+    PASS  state transitions are validated
+    PASS  queue persistence round-trips
+    PASS  tasks that were active on crash come back paused
+    PASS  concurrency capacity is enforced
+
+  HTTP API
+    PASS  rejects requests without a valid token
+    PASS  serves status and task list
+    PASS  rejects a task with no URL
+    PASS  adds a task and completes it end to end
+    PASS  pause, resume and remove work through the API  (997ms)
+    PASS  unknown routes and methods are refused
+    PASS  config can be read and patched
+    PASS  probe endpoint reports without downloading
+    PASS  probe endpoint honours the exception list
+    PASS  static GUI is served with a token injected
+    PASS  path traversal cannot escape the GUI directory
+    PASS  clear-completed removes finished tasks
+
+  Stream download end to end
+    PASS  downloads an HLS stream by stitching its segments
+    PASS  picker can choose a specific variant
+
+  Browser integration
+    PASS  extension manifest is valid MV3 with nativeMessaging
+    PASS  native host frames replies with a length prefix
+    PASS  native host rejects an unknown message type
+    PASS  install script runs when invoked directly
+    PASS  install writes manifests whose path exists
+    PASS  native host registration reports per-browser status  (674ms)
+    PASS  a placeholder registration is not reported as usable  (435ms)
+
+  Queue control
+    PASS  starting a paused or failed task actually runs it
+    PASS  an explicit start overrides a paused queue
+    PASS  two transfers aimed at one file do not corrupt each other  (2227ms)
+
+  Installation and diagnosis
+    PASS  doctor reports a working runtime without leaking the token  (435ms)
+    PASS  doctor fails and explains an unusable download folder  (431ms)
+    PASS  doctor flags a stale runtime file from a dead daemon  (402ms)
+    PASS  discarding a transfer never deletes a directory at the target
+
+  URL history
+    PASS  a secret in a URL is never written to the history file
+    PASS  history survives a reload and de-duplicates by URL
+    PASS  the history file stays bounded
+    PASS  clearing history is explicit and removes the file
+    PASS  the daemon records queued URLs and offers them back
+
+  SOCKS5 proxy
+    PASS  SOCKS5 is recognised and HTTP proxy URLs are not
+    PASS  a download completes through a SOCKS5 proxy  (1036ms)
+    PASS  SOCKS5 username/password authentication is performed  (1013ms)
+    PASS  a SOCKS5 proxy that refuses every method is reported, not retried forever
+    PASS  a credential-requiring SOCKS5 proxy without credentials says so
+    PASS  an unreachable SOCKS5 destination reports why
+    PASS  a malformed SOCKS5 proxy URL is rejected clearly
+
+  Extension protocol
+    PASS  the native host reports 'daemon not running' with a fix
+    PASS  the native host rejects an invalid message and stays alive
+    PASS  the native host rejects a protocol version it cannot speak
+    PASS  an invalid JSON frame is answered without crashing the host
+    PASS  a repeated media URL is queued once, not once per event
+    PASS  the native host queues a real download into the daemon
+    PASS  task cookies and referer reach the origin
+    PASS  credentials become a Basic authorization header
+    PASS  an explicitly set header wins over the convenience fields
+    PASS  buildRequestHeaders does not mutate the task's own headers
+    PASS  a cookie never reaches the daemon log
+
+  Browser GUI lifecycle
+    PASS  GUI: a URL typed into the box becomes a task on screen
+    PASS  GUI: Pause stops the transfer and Resume continues it
+    PASS  GUI: a failing download explains itself and offers Retry  (19044ms)
+    PASS  GUI: reloading the page keeps every task and its state  (13707ms)
+    PASS  GUI: Delete removes the row and keeps the file on disk
+    PASS  GUI: an unknown-length download shows bytes, never a fake percentage  (2350ms)
+    PASS  GUI: a dragged row changes the persisted queue order  (3345ms)
+    PASS  GUI: settings saved from the form take effect
+    PASS  GUI: the Discover tab lists a media stream and can queue it
+
+  Command line
+    PASS  argument parsing handles all documented flags
+    PASS  connection count is clamped to 1..32
+    PASS  unknown options are rejected
+    PASS  bare hosts get an https scheme
+
+  Site grabber
+    PASS  extractLinks finds attributes and skips non-resources
+    PASS  grabPage lists a real page and dedupes the page URL
+    PASS  grabPage mediaOnly keeps only media
+    PASS  grabPage extension filter works
+    PASS  a direct file URL is returned as the resource
+    PASS  grabAndQueue queues every link
+
+  Media sniffer
+    PASS  classify recognises stream and media URLs
+    PASS  sniffPage finds HLS and DASH candidates on a page
+    PASS  inspectStream describes an HLS master playlist
+    PASS  inspectStream counts segments in a media playlist
+    PASS  inspectStream describes a DASH manifest
+    PASS  inspectStream probes a progressive file
+    PASS  inspectStream rejects a non-media URL
+
+  Grabber and sniffer over the API
+    PASS  POST /api/grab lists resources without queueing
+    PASS  POST /api/grab with queue=true enqueues them
+    PASS  POST /api/sniff returns candidates
+    PASS  POST /api/inspect-stream describes a stream
+    PASS  grab and sniff reject a missing url
+
+  Track selection and merging
+    PASS  SegmentTimeline drives segment enumeration
+    PASS  a timeline with a repeat attribute expands correctly
+    PASS  initialization names expand $RepresentationID$
+    PASS  a real ffmpeg-style DASH package downloads and merges
+    PASS  audio representations are identified
+    PASS  selectTracks returns both video and audio
+    PASS  pickBestRepresentation never picks an audio track
+    PASS  ffmpeg is discoverable on this host
+    PASS  mergeTracks with a single track just renames it
+    PASS  mergeTracks reports honestly when ffmpeg is missing
+    PASS  DASH with separate audio fetches and merges both tracks
+    PASS  a failed merge keeps the tracks and reports the real output
+    PASS  a successful merge removes the intermediate track files
+    PASS  DASH videoOnly skips the audio track
+
+  Clipboard watcher
+    PASS  clipboard watcher honours the setting and dedupes
+    PASS  URL_RE accepts http/ftp and rejects prose
+
+  Capture proxy
+    PASS  response classification is conservative
+    PASS  confidence reflects how certain the classification is
+    PASS  filename comes from Content-Disposition then the URL
+    PASS  proxy forwards plain HTTP byte-for-byte and captures the file  (430ms)
+    PASS  the same URL is only offered once
+    PASS  CONNECT tunnels opaque HTTPS without decrypting
+    PASS  openssl is discoverable and a CA can be created
+    PASS  leaf certificates are issued per host and cached
+    PASS  MITM mode decrypts HTTPS and captures the download  (712ms)
+    PASS  proxy start/stop is idempotent and reports state
+
+  Integrity verification and per-server limits
+    PASS  digest headers are parsed across all three spellings
+    PASS  origin digest is verified against the downloaded file
+    PASS  a mismatched digest discards the download
+    PASS  an inconsistent origin is caught and re-downloaded as one stream
+    PASS  a consistent origin passes the boundary check
+    PASS  per-server connection cap is enforced
+    PASS  scheduled bandwidth windows reach the rate limiter
+
+  Adaptive concurrency and worker health
+    PASS  adaptive gate halves on a throttle and recovers one at a time
+    PASS  repeated throttles in one episode do not halve twice
+    PASS  an explicit Retry-After is honoured as the cooldown
+    PASS  throttle status codes are recognised
+    PASS  the gate admits only up to its current cap
+    PASS  worker health flags a stalled connection
+    PASS  a worker waiting on the rate limiter is never judged slow
+    PASS  worker health flags a connection far below the mean
+    PASS  a tiny text body for a binary name is flagged as suspicious
+    PASS  concurrent probes to one host are serialised
+    PASS  the gate survives a throttling origin and still finishes correctly  (2065ms)
+
+  Native MP4 muxing
+    PASS  box listing walks a real init segment
+    PASS  a non-MP4 buffer is not mistaken for one
+    PASS  the muxer joins two fragmented-MP4 tracks into one file
+    PASS  muxTracks handles a single track
+    PASS  muxNatively returns null for input it cannot handle
+
+  Dynamic segmentation
+    PASS  a slow origin lets an idle worker share a long segment  (10045ms)
+    PASS  the downloader passes probe range support to the engine  (2053ms)
+    PASS  a range-less origin never enables splitting
+    PASS  splitting is disabled once the origin ignores Range
+
+  Acceptance-suite regressions
+    PASS  prepareTarget preserves existing data on resume
+    PASS  prepareTarget grows but never shrinks an existing file
+    PASS  a HEAD request reaches the origin as HEAD
+    PASS  probing a large resource does not transfer its body
+    PASS  transient failures at probe time are retried
+    PASS  a definitive 404 at probe time is not retried
+    PASS  the engine honours the configured retry policy
+    PASS  resuming reuses on-disk progress instead of restarting
+
+  P0-A media routing and P0-B unknown length
+    PASS  detectKind identifies media URLs and leaves HTTP alone
+    PASS  the streaming path writes the exact bytes of a chunked response
+    PASS  a cancelled stream leaves no file behind
+    PASS  an HTTP error on the streaming path creates no file
+    PASS  the streaming path publishes atomically over an existing file
+    PASS  a known-length download still uses the segmented engine
+    PASS  get --kind hls produces media, not the playlist text
+    PASS  get auto-detects an HLS URL without --kind
+    PASS  get --kind dash reports a merge failure instead of a false success
+    PASS  get --dry-run on a media URL transfers no fragments
+    PASS  the media path honours the task-level insecure flag
+    PASS  the media path receives the caller's abort signal
+
+  P1-A daemon lifecycle
+    PASS  the daemon entry point is executable and self-starting
+    PASS  the runtime file is validated against a live process
+    PASS  daemon shutdown removes the runtime file and exits  (679ms)
+
+  Media segment retry
+    PASS  a dropped connection on one HLS segment is retried
+    PASS  a 404 on a media segment is not retried
+
+  Media output path
+    PASS  get -o <full file path> writes exactly that file
+    PASS  get -o <directory> keeps the category subfolder behaviour
+    PASS  a directory target with categorizeByType off stays flat
+    PASS  auto-detected and forced HLS agree on the output path
+    PASS  auto-detected and forced DASH agree on the exact output path
+    PASS  the CLI turns -o <file> into an exact target and -o <dir> into a folder
+
+  Media rate limiting
+    PASS  the limiter paces the source, not the tail (backpressure)  (2003ms)
+    PASS  a chunk larger than the bucket is spent, not deadlocked  (3017ms)
+    PASS  --limit throttles an HLS download to the configured rate  (3047ms)
+    PASS  Settings speedLimit applies when the task has none  (3063ms)
+    PASS  concurrency does not multiply the cap  (3059ms)
+    PASS  DASH video and audio share one bucket  (2125ms)
+    PASS  an HLS audio rendition draws from the same bucket  (3032ms)
+    PASS  no limit means no throttling
+
+  Redirect credentials
+    PASS  a same-origin redirect keeps the request headers
+    PASS  a cross-origin redirect drops every credential header
+    PASS  credentials stay stripped after a chain returns to the origin
+    PASS  a download through a cross-origin redirect stays correct and unleaked
+    PASS  sameOrigin compares scheme, host and effective port
+    PASS  the headers the product builds are the ones stripped
+
+  Media TLS --insecure
+    PASS  default settings reject the self-signed media origin
+    PASS  --insecure downloads the whole HLS chain with correct bytes
+    PASS  --insecure reaches the DASH manifest, init segment and fragments
+    PASS  --insecure on the CLI downloads the HTTPS playlist and fragments
+
+  Exact target and overwrite policy
+    PASS  exact target with rename keeps the existing file
+    PASS  exact target with skip fails and keeps the original bytes
+    PASS  exact target with overwrite replaces the file
+    PASS  exact target with a fresh path is unaffected by the policy
+    PASS  DASH honours the overwrite policy on an exact target
+    PASS  the CLI refuses to overwrite with -o <file> under the skip policy
+    PASS  the CLI reports the renamed landing place under the rename policy
+    PASS  concurrent exact targets never collide on the same name
+
+  Cancel during body read
+    PASS  readBody rejects promptly when the body stalls
+    PASS  an HLS fragment cancelled mid-body stops at once and is not retried
+    PASS  a DASH fragment cancelled mid-body stops at once and is not retried
+    PASS  abort listeners are released on success, error and cancel
+    PASS  cancel latency is measured from the abort() call
+
+  Scheduled speed limit
+    PASS  the scheduler reaches a real Downloader bucket
+    PASS  a window opened before the start throttles a running HLS task  (4039ms)
+    PASS  a window is a total across concurrent tasks, not per task  (8050ms)
+    PASS  a rate change reaches a transfer that is already running  (7035ms)
+    PASS  a task limit and a window compose, tightest wins  (7063ms)
+    PASS  changing the rate under load neither deadlocks nor stalls
+
+  Unknown-length rate limiting
+    PASS  a chunked download obeys the scheduled window  (2017ms)
+    PASS  concurrent chunked downloads share one window bucket  (4025ms)
+    PASS  a chunked transfer survives rate changes while reading  (3224ms)
+
+  Output reservation
+    PASS  concurrent rename tasks each get their own file
+    PASS  concurrent skip tasks fail cleanly and do not block the next task
+    PASS  a lock timeout frees its place in the queue
+    PASS  a failure while reserving releases the lock
+    PASS  DASH and HLS concurrency share the same reservation guarantee
+
+  Output lock mutex
+    PASS  a timeout does not unseat the current holder  (569ms)
+    PASS  a queued waiter can be cancelled
+    PASS  the same path can be retried after timeout, cancel and error
+    PASS  cancelling a task queued behind the output lock stops it
+
+  Derived path conflicts
+    PASS  a media claim blocks a plain download on every derived name
+    PASS  a plain claim blocks a later media task on its derived paths
+    PASS  HLS and DASH run correctly beside a conflicting plain download
+    PASS  overwrite never replaces a path another transfer is using
+
+  Case-insensitive path identity
+    PASS  the low-level lock stays FIFO across case variants
+    PASS  pathKey folds case only where the volume does
+    PASS  the case-insensitivity assumption matches the actual volume
+    PASS  rename waits for a live case variant, then picks a disjoint name
+    PASS  a case variant of a live target is refused at once (skip)
+    PASS  overwrite refuses a live case variant at once
+    PASS  a retry takes over its own stale reservation, another task still may not
+    PASS  a failed task retried under the same id succeeds with correct bytes
+    PASS  an identical-spelling overwrite queues, then overwrites  (425ms)
+    PASS  a live case variant keeps its derived names
+    PASS  the suite does not tamper with global TLS state
+
+  P1-C gap coverage
+    PASS  repeated interruptions still converge on the correct bytes  (17941ms)
+    PASS  maxConnectionsPerServer is counted across tasks
+    PASS  a write failure surfaces instead of reporting success
+    PASS  an aborted segmented transfer keeps resumable state  (18042ms)
+
+  282 passed, 0 failed

@@ -1,0 +1,158 @@
+﻿
+  downloadx self-test
+
+  Utilities
+    PASS  parseSize understands units
+    PASS  formatBytes / formatDuration are stable
+    PASS  sanitizeName strips characters Windows rejects
+    PASS  filenameFromUrl / filenameFromDisposition
+
+  Segment planning
+    PASS  plan covers the resource exactly once
+    PASS  small files are not split
+    PASS  segment count respects both limits
+    PASS  splitSegment preserves coverage
+
+  Classification and naming
+    PASS  extension detection handles URLs, queries and dots
+    PASS  categorize routes known types
+    PASS  resolveDirectory honours categorizeByType
+    PASS  uniquePath avoids collisions
+
+  Site rules
+    PASS  glob matching is host-safe
+    PASS  exceptions and per-host overrides
+
+  Configuration
+    PASS  defaults are sane and paths resolve
+    PASS  values are clamped and persisted
+    PASS  a corrupt config falls back to defaults
+
+  Scheduler
+    PASS  clock parsing and windows
+    PASS  nextOccurrence rolls to tomorrow when past
+    PASS  tick fires once per minute per schedule
+
+  Download engine
+    PASS  probe reports size, ranges, type and filename
+    PASS  probe detects an origin that ignores Range
+    PASS  probe follows redirects and reads Content-Disposition
+    PASS  single connection is byte-exact
+    PASS  multi-connection matches single-connection output
+    PASS  workers never claim the same segment twice
+    PASS  one ranged request per segment on a clean run
+    PASS  temporary state is removed on success
+
+  Resume and recovery
+    PASS  interrupted download resumes to the correct bytes
+    PASS  stale partial data is discarded when the revision changed
+    PASS  recovers from an origin that drops the socket mid-body
+    PASS  short body is completed by re-requesting the remainder
+    PASS  downgrades to a single stream when Range is ignored
+
+  Rate limiting
+    PASS  speed limit slows the transfer down
+
+  HLS streams
+    PASS  parses a master playlist and ranks variants
+    PASS  parses a media playlist with keys and init segment
+    PASS  attribute parsing handles quoted commas
+
+  DASH manifests
+    PASS  parses durations
+    PASS  expands segment templates
+    PASS  parses an MPD and picks the best representation
+
+  FTP protocol
+    PASS  URL parsing extracts host, path and credentials
+    PASS  control channel parses multi-line replies
+    PASS  FTP login failure surfaces the server reply
+
+  Queue manager
+    PASS  adds, lists and orders tasks
+    PASS  state transitions are validated
+    PASS  queue persistence round-trips
+    PASS  tasks that were active on crash come back paused
+    PASS  concurrency capacity is enforced
+
+  HTTP API
+    PASS  rejects requests without a valid token
+    PASS  serves status and task list
+    PASS  rejects a task with no URL
+    PASS  adds a task and completes it end to end
+    PASS  pause, resume and remove work through the API
+    PASS  unknown routes and methods are refused
+    PASS  config can be read and patched
+    PASS  probe endpoint reports without downloading
+    PASS  probe endpoint honours the exception list
+    PASS  static GUI is served with a token injected
+    PASS  path traversal cannot escape the GUI directory
+    PASS  clear-completed removes finished tasks
+
+  Stream download end to end
+    PASS  downloads an HLS stream by stitching its segments
+    PASS  picker can choose a specific variant
+
+  Browser integration
+    PASS  extension manifest is valid MV3 with nativeMessaging
+    PASS  native host frames replies with a length prefix
+    PASS  native host rejects an unknown message type
+    PASS  install script runs when invoked directly
+    PASS  install writes manifests whose path exists
+    PASS  native host registration reports per-browser status
+    PASS  a placeholder registration is not reported as usable
+
+  Queue control
+    PASS  starting a paused or failed task actually runs it
+    PASS  an explicit start overrides a paused queue
+    PASS  two transfers aimed at one file do not corrupt each other
+
+  Installation and diagnosis
+    PASS  doctor reports a working runtime without leaking the token
+    PASS  doctor fails and explains an unusable download folder
+    PASS  doctor flags a stale runtime file from a dead daemon
+    PASS  discarding a transfer never deletes a directory at the target
+
+  URL history
+    PASS  a secret in a URL is never written to the history file
+    PASS  history survives a reload and de-duplicates by URL
+    PASS  the history file stays bounded
+    PASS  clearing history is explicit and removes the file
+    PASS  the daemon records queued URLs and offers them back
+
+  SOCKS5 proxy
+    PASS  SOCKS5 is recognised and HTTP proxy URLs are not
+    PASS  a download completes through a SOCKS5 proxy
+    PASS  SOCKS5 username/password authentication is performed
+    PASS  a SOCKS5 proxy that refuses every method is reported, not retried forever
+    PASS  a credential-requiring SOCKS5 proxy without credentials says so
+    PASS  an unreachable SOCKS5 destination reports why
+    PASS  a malformed SOCKS5 proxy URL is rejected clearly
+
+  Extension protocol
+    PASS  the native host reports 'daemon not running' with a fix
+    PASS  the native host rejects an invalid message and stays alive
+    PASS  the native host rejects a protocol version it cannot speak
+    PASS  an invalid JSON frame is answered without crashing the host
+    PASS  a repeated media URL is queued once, not once per event
+    PASS  the native host queues a real download into the daemon
+    PASS  task cookies and referer reach the origin
+    PASS  credentials become a Basic authorization header
+    PASS  an explicitly set header wins over the convenience fields
+    PASS  buildRequestHeaders does not mutate the task's own headers
+    PASS  a cookie never reaches the daemon log
+
+  Browser GUI lifecycle
+node : 
+所在位置 行:3 字符: 1
++ node test/run.mjs 2>&1 | Tee-Object -FilePath "desktop/baseline/test- ...
++ ~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  self-test crashed: Error: page threw: TypeError: Cannot read properties of null (reading 'textContent')
+    at <anonymous>:1:51
+    at Cdp.eval (file:///C:/Users/Administrator/dhs/downloadx/test/gui-browser.mjs:107:13)
+    at async waitFor (file:///C:/Users/Administrator/dhs/downloadx/test/gui-browser.mjs:154:12)
+    at async runGuiBrowserTests (file:///C:/Users/Administrator/dhs/downloadx/test/gui-browser-run.mjs:102:5)
+    at async runSelfTest (file:///C:/Users/Administrator/dhs/downloadx/test/selftest.mjs:1560:21)
