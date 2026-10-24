@@ -1,0 +1,76 @@
+name: build-installers
+
+on:
+  push:
+    branches: [ci, main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 本仓库零运行时依赖,但打包器(electron-builder)是 devDependency,
+      # 仅 CI 需要,不进产品(README 的"零依赖"指运行时)。
+      - name: Install packager
+        run: npm install --no-save electron-builder@25 --no-package-lock
+      - name: Build Windows installers (NSIS setup + portable)
+        run: npx electron-builder --win nsis portable --x64
+        env:
+          # productName 含非 ASCII,electron-builder 默认以产品名命名产物;
+          # 统一用英文名避免 CI 文件名编码问题。
+          EP_PRODUCT_NAME: FeiLiu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            release/*.exe
+            release/latest.yml
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install packager
+        run: npm install --no-save electron-builder@25 --no-package-lock
+      - name: Build Linux packages (AppImage + deb)
+        run: npx electron-builder --linux AppImage deb --x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('nightly-{0}', github.sha) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly build' }}
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+            artifacts/**/latest.yml

@@ -29,7 +29,8 @@
     "acceptance": "node test/acceptance.mjs",
     "acceptance:list": "node test/acceptance.mjs --list",
     "acceptance:real": "node test/acceptance-real.mjs",
-    "desktop:launch": "node test/desktop-launch.mjs"
+    "desktop:launch": "node test/desktop-launch.mjs",
+    "dist": "electron-builder --win nsis portable --linux AppImage deb --x64"
   },
   "files": [
     "bin",
@@ -80,6 +81,16 @@
     },
     "portable": {
       "artifactName": "DownloadX-Portable-${version}-x64.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "FeiLiu-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "artifactName": "FeiLiu-${version}.${ext}",
+      "category": "Network",
+      "maintainer": "feiliu contributors"
     }
   },
   "devDependencies": {
