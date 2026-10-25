@@ -7,7 +7,8 @@
 //       console progress parsed (percentage marked approximate, "约 x%") ->
 //       artefact landed at the policy-resolved path -> sha256 recorded;
 //   (c) the rename policy applies to BT outputs like to any other task;
-//   (d) the configured HTTP proxy is passed through (--all-proxy);
+//   (d) the proxy follows the downloader's per-run decision only (P-22 批-8
+//       re-pin: none mode drops the Settings proxy, manual forwards it);
 //   (e) cancel kills the WHOLE process tree (taskkill /T semantics): the
 //       hung aria2c AND its grandchild are gone, nothing is published, the
 //       staging family is discarded;
@@ -17,7 +18,8 @@
 //       and the console tail in the error;
 //   (h) a .torrent URL is a BT task too, end to end.
 //
-// No real aria2c exists on this machine and none is needed: the fixture
+// No real aria2c is needed even when one sits on PATH (批-8: the missing-arm
+// pins a broken configured path, authoritative in findAria2c): the fixture
 // test/fixtures/fake-aria2c.mjs imitates its console surface. Everything
 // runs in an isolated DOWNLOADX_HOME (temp dir), no public network, no user
 // Downloads, no D:/IAM/downloadx-data, and the process exits clean.
@@ -276,18 +278,34 @@ async function main() {
       cleanup();
     });
 
-    await suite.test("configured HTTP proxy is passed through as --all-proxy", async () => {
+    await suite.test("proxy follows the downloader's per-run decision only (P-22)", async () => {
+      // 批-8 P-22 re-pin: runBt forwards exactly prepared.proxy (selectRunProxy's
+      // output) and no longer resurrects config.proxy on its own. This suite
+      // runs with proxyMode "none" (global config above), so a Settings proxy
+      // must NOT reach aria2c — the GUI's "直连=忽略一切代理" promise — while
+      // manual mode forwards the Settings value as --all-proxy. (The five-way
+      // matrix, including per-task proxies and system discovery, lives in
+      // test/batch8-tails.mjs.)
       const argsFile = path.join(home, "args-proxy.json");
       const cleanup = armEnv({ mode: "ok", argsFile });
       await config.set({ proxy: "http://127.0.0.1:9" });
       try {
-        const id = await addMagnet(MAGNET_OK, "bt-proxy.bin");
+        // none + Settings proxy: direct — no --all-proxy at all.
+        const id = await addMagnet(MAGNET_OK, "bt-proxy-none.bin");
         await waitComplete(id);
-        const argv = JSON.parse(await fsp.readFile(argsFile, "utf8"));
+        let argv = JSON.parse(await fsp.readFile(argsFile, "utf8"));
+        assert.equal(argv.filter((a) => String(a).startsWith("--all-proxy=")).length, 0,
+          "none mode must drop the Settings proxy: " + JSON.stringify(argv));
+
+        // manual + Settings proxy: forwarded through the same decision chain.
+        await config.set({ proxyMode: "manual" });
+        const id2 = await addMagnet(MAGNET_OK, "bt-proxy-manual.bin");
+        await waitComplete(id2);
+        argv = JSON.parse(await fsp.readFile(argsFile, "utf8"));
         assert.ok(argv.includes("--all-proxy=http://127.0.0.1:9"),
-          "proxy must be transparently delegated: " + JSON.stringify(argv));
+          "manual mode must forward the Settings proxy: " + JSON.stringify(argv));
       } finally {
-        await config.set({ proxy: "" });
+        await config.set({ proxy: "", proxyMode: "none" });
         cleanup();
       }
     });
@@ -354,10 +372,16 @@ async function main() {
     });
 
     await suite.test("missing aria2c fails with install guidance, immediately", async () => {
-      // Honest precondition: the ambient search really finds nothing here.
+      // 批-8 hardening: a real aria2c on PATH (this machine grew one via
+      // WinGet Links) must not color this arm. In findAria2c a CONFIGURED
+      // path is authoritative — present-but-missing returns null without any
+      // ambient search — so pinning a broken path makes "missing" true on
+      // every machine (same technique as batch8-ytdlp's magnet guard).
+      const brokenAria2c = path.join(home, "nope", "aria2c.exe");
       resetAria2cCache();
-      assert.equal(await findAria2c(""), null, "this machine must not find a real aria2c for this arm");
-      await config.set({ aria2cPath: "" });
+      assert.equal(await findAria2c(brokenAria2c), null,
+        "a configured but missing path is authoritative-null");
+      await config.set({ aria2cPath: brokenAria2c });
       try {
         const id = await addMagnet(MAGNET_OK, "missing.bin");
         const task = await waitError(id);

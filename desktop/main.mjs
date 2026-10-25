@@ -613,6 +613,143 @@ async function toggleSpeedLimit() {
   }
 }
 
+// ---- 剪贴板进程内桥（P-25） -----------------------------------------------
+
+// [clipboard-bridge-pure] begin
+// —— 纯逻辑段（P-25 剪贴板桥）。勿引入 electron/节点专用依赖：
+// test/batch8-bridge.mjs 会把这一整段从本文件抠出来单独求值测试，
+// 改这里的同时要保证该测试仍然通过。
+//
+// 语义与 src/clipboard.mjs 的 ClipboardWatcher.check() 完全一致：空文本或
+// 与上次相同 → 不动作、last 不变；否则 last 前进为本次全文（即使首行不是
+// URL），首行 trim 后匹配 ^(https?|ftp)://\S+$ 才投递。桌面桥与 daemon 侧
+// watcher 必须共用同一套去重/正则语义，同一次复制的行为才不会分叉。
+const CLIPBOARD_URL_RE = /^(https?|ftp):\/\/\S+$/i;
+
+/** 桥接轮询周期（毫秒），与 src/clipboard.mjs ClipboardWatcher 的默认 1500 相同。 */
+const CLIPBOARD_POLL_MS = 1500;
+
+/**
+ * 一次剪贴板轮询的决策（纯函数，回归套件直接测）。
+ * @param {string} text 本次读到的剪贴板全文
+ * @param {string} last 上次记录的全文
+ * @returns {{ post: string|null, nextLast: string }}
+ */
+function planClipboardPoll(text, last) {
+  const t = typeof text === "string" ? text : "";
+  const prev = typeof last === "string" ? last : "";
+  if (!t || t === prev) return { post: null, nextLast: prev };
+  const candidate = (t.split(/\r?\n/)[0] || "").trim();
+  const post = CLIPBOARD_URL_RE.test(candidate) ? candidate : null;
+  return { post, nextLast: t };
+}
+// [clipboard-bridge-pure] end
+
+// 背景：daemon 自带的 ClipboardWatcher 经 execFile 派生 powershell.exe 读剪贴
+// 板，而本机 0xC0000142 谱系（见下方 shell:openPath 一带的注释、附记十二/十八）
+// 下这一血统的 GUI 子进程初始化必败——该 watcher 实际上从未读到过剪贴板。桌面
+// 主进程自己持有 electron.clipboard（进程内、零子进程），于是由这里代劳：
+//   * daemon ensure 成功后启动 1.5s 轮询（纯决策见 [clipboard-bridge-pure] 段）；
+//   * 发现新 URL → POST /api/tasks {url, queueId:"clipboard"}；token/port 每次
+//     现取 runtime.json（daemon 重启后 token 必换，复用旧值只会 401）；
+//   * 同时 PATCH /api/config {clipboardBridge:true} 落盘，daemon 侧的启动守卫
+//     （src/daemon.mjs）据此不再起那条必败的 PowerShell 轮询。
+const clipboardBridge = {
+  timer: null,      // 轮询 interval（unref，不阻退出）
+  last: "",         // 上次读到的剪贴板全文（与 ClipboardWatcher.last 同义）
+  started: false,
+};
+
+/** 启动桥接轮询；重复调用幂等（daemon:ensure 可能多次成功）。 */
+function startClipboardBridge() {
+  if (clipboardBridge.started) return;
+  clipboardBridge.started = true;
+  // "本桌面的剪贴板由我接管"要落盘告知 daemon：daemon 之后（含重启后）不再
+  // 起 PowerShell watcher。失败只记日志——桥接照常跑，下次桌面启动会再 PATCH。
+  enableClipboardBridgeOnDaemon();
+  clipboardBridge.timer = setInterval(() => {
+    pollClipboardOnce().catch((err) =>
+      logLaunch("clipboard bridge poll failed: " + (err && err.message ? err.message : err)));
+  }, CLIPBOARD_POLL_MS);
+  clipboardBridge.timer.unref?.();
+}
+
+/** 一次轮询：读剪贴板 → 纯决策 → 投递。任何一步失败都不中断轮询循环。 */
+async function pollClipboardOnce() {
+  let text = "";
+  try {
+    text = clipboard.readText() || "";
+  } catch {
+    return;   // 剪贴板暂不可读（锁屏/被占用）：本周期放弃，下周期再试
+  }
+  const plan = planClipboardPoll(text, clipboardBridge.last);
+  clipboardBridge.last = plan.nextLast;
+  if (plan.post) await postClipboardTask(plan.post);
+}
+
+/** 带 token 的 daemon POST /api/tasks；token/port 现取，失败记日志不抛出。 */
+async function postClipboardTask(url) {
+  const rt = (manager.rt && manager.rt.port && manager.rt.token)
+    ? manager.rt
+    : (await readRuntime());
+  if (!rt || !rt.port || !rt.token) {
+    logLaunch("clipboard bridge: daemon runtime unavailable, dropped " + url);
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`http://${rt.host || "127.0.0.1"}:${rt.port}/api/tasks`, {
+      method: "POST",
+      headers: { "x-downloadx-token": rt.token, "content-type": "application/json" },
+      body: JSON.stringify({ url, queueId: "clipboard" }),
+      signal: controller.signal,
+    });
+    if (res.status === 201 || res.status === 202) {
+      logLaunch("clipboard bridge: queued " + url);
+      return true;
+    }
+    // 409 = 同链接已在队列（API 的 live guard），与 daemon 侧 watcher 的
+    // existing 去重同义：静默即可，不该打扰用户。
+    logLaunch("clipboard bridge: POST /api/tasks -> HTTP " + res.status + " for " + url);
+    return false;
+  } catch (err) {
+    logLaunch("clipboard bridge: POST failed: " + (err && err.message ? err.message : err));
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** PATCH /api/config {clipboardBridge:true}：让 daemon 侧启动守卫（P-25）生效。 */
+async function enableClipboardBridgeOnDaemon() {
+  const rt = (manager.rt && manager.rt.port && manager.rt.token)
+    ? manager.rt
+    : (await readRuntime());
+  if (!rt || !rt.port || !rt.token) {
+    logLaunch("clipboard bridge: cannot PATCH config, daemon runtime unavailable");
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`http://${rt.host || "127.0.0.1"}:${rt.port}/api/config`, {
+      method: "PATCH",
+      headers: { "x-downloadx-token": rt.token, "content-type": "application/json" },
+      body: JSON.stringify({ clipboardBridge: true }),
+      signal: controller.signal,
+    });
+    if (res.status !== 200) throw new Error("HTTP " + res.status);
+    logLaunch("clipboard bridge: daemon config.clipboardBridge=true");
+    return true;
+  } catch (err) {
+    logLaunch("clipboard bridge: PATCH config failed: " + (err && err.message ? err.message : err));
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---- SSE 订阅与重连 -------------------------------------------------------
 
 function startEventFeed(rt) {
@@ -855,6 +992,9 @@ ipcMain.handle("daemon:ensure", async () => {
     // 不该跟着界面陪葬。
     startEventFeed(rt);
     rebuildTrayMenu().catch(() => {});
+    // P-25：daemon 就绪后剪贴板改由本进程桥接（背景与接线见
+    // startClipboardBridge 一节）——daemon 不再依赖必败的 PowerShell 派生。
+    startClipboardBridge();
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
         await mainWindow.loadURL(rt.url);

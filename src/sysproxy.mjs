@@ -179,12 +179,30 @@ export function parseEnvProxy(env = process.env) {
 }
 
 /**
+ * Is this host the machine itself (loopback)? P-21's "<local>" extension.
+ * Deliberately literal: dotted loopback (127.x), the IPv6 loopback and the
+ * "localhost" name — nothing smarter, because a noProxy list is not the place
+ * to start classifying whole address families.
+ */
+function isLoopbackHost(host) {
+  return host === "localhost" || host.startsWith("127.") || host === "::1";
+}
+
+/**
  * Does a host match a noProxy / ProxyOverride list?
  *
  * Deliberately the simple, common semantics (curl-style), because the OS lists
  * are written for browsers and shells, not for a full WPAD engine:
  *   * "*"            — bypass everything;
- *   * "<local>"      — bare hostnames (no dots) stay direct, the Windows token;
+ *   * "<local>"      — bare hostnames (no dots) AND loopback targets stay
+ *                      direct: the Windows token, extended (P-21) so a list
+ *                      that only says "<local>" still keeps 127.x/::1 off the
+ *                      proxy — the real-machine smoke showed loopback landing
+ *                      on the system proxy otherwise;
+ *   * "127.*"        — a literal address prefix, the form Windows' own UI
+ *                      writes for "this whole range" (P-21): the host must
+ *                      start with "127." — the dot anchors the prefix, so
+ *                      "1270.…" does not match;
  *   * ".example.com" / "*.example.com" — the domain and anything under it;
  *   * "example.com"  — the host itself, or any subdomain of it;
  *   * anything else  — exact host match (so "127.0.0.1" and "localhost" work).
@@ -201,10 +219,14 @@ export function matchesNoProxy(hostname, noProxy) {
     if (!pat) continue;
     if (pat === "*") return true;
     if (pat === "<local>") {
-      if (!host.includes(".")) return true;
+      if (!host.includes(".") || isLoopbackHost(host)) return true;
       continue;
     }
     if (pat.startsWith("*.")) pat = pat.slice(1);   // "*.x" and ".x" mean the same thing here
+    if (pat.endsWith(".*")) {
+      if (host.startsWith(pat.slice(0, -1))) return true;   // "127.*" → startsWith "127."
+      continue;
+    }
     if (pat.startsWith(".")) {
       if (host === pat.slice(1) || host.endsWith(pat)) return true;
       continue;

@@ -233,6 +233,33 @@ async function main() {
       assert.equal(sysproxy.matchesNoProxy("", ["*"]), false);
     });
 
+    // P-21: the native Windows ProxyOverride forms the simplified matcher
+    // used to drop on the floor — prefix wildcards ("127.*") and a <local>
+    // that must also cover loopback. Five pinned families: prefix wildcard
+    // 127.*, prefix wildcard 192.168.*, <local>, exact domain, no match.
+    await suite.test("matchesNoProxy: Windows prefix wildcards and loopback <local> (P-21)", async () => {
+      // "127.*" — prefix match, anchored by the dot.
+      assert.equal(sysproxy.matchesNoProxy("127.0.0.1", ["127.*"]), true);
+      assert.equal(sysproxy.matchesNoProxy("127.9.9.9", ["127.*"]), true);
+      assert.equal(sysproxy.matchesNoProxy("1270.0.0.1", ["127.*"]), false, "the dot anchors the prefix");
+      assert.equal(sysproxy.matchesNoProxy("128.0.0.1", ["127.*"]), false);
+      // "192.168.*" — the other native form from the field report.
+      assert.equal(sysproxy.matchesNoProxy("192.168.1.5", ["192.168.*"]), true);
+      assert.equal(sysproxy.matchesNoProxy("192.169.1.5", ["192.168.*"]), false);
+      // "<local>" — dotless hostnames as before, plus loopback (P-21).
+      assert.equal(sysproxy.matchesNoProxy("my-pc", ["<local>"]), true, "dotless hostname stays local");
+      assert.equal(sysproxy.matchesNoProxy("host.corp", ["<local>"]), false, "dotted non-loopback is not local");
+      assert.equal(sysproxy.matchesNoProxy("127.0.0.2", ["<local>"]), true, "dotted loopback is local");
+      assert.equal(sysproxy.matchesNoProxy("::1", ["<local>"]), true, "ipv6 loopback is local");
+      // exact domain entry keeps its curl-style semantics next to wildcards.
+      assert.equal(sysproxy.matchesNoProxy("example.com", ["example.com"]), true);
+      assert.equal(sysproxy.matchesNoProxy("sub.example.com", ["example.com"]), true);
+      assert.equal(sysproxy.matchesNoProxy("badexample.com", ["example.com"]), false);
+      // a realistic mixed list, and a host nothing in it matches.
+      assert.equal(sysproxy.matchesNoProxy("192.168.0.3", ["localhost", "127.*", "192.168.*", "<local>", "example.com"]), true);
+      assert.equal(sysproxy.matchesNoProxy("8.8.8.8", ["localhost", "127.*", "192.168.*", "<local>", "example.com"]), false);
+    });
+
     // ================================= resolveSystemProxy: branches/cache/failure
     suite.group("resolveSystemProxy: injected branches, 30s cache, never throws");
 

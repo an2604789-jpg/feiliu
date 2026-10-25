@@ -798,7 +798,21 @@ export class Daemon {
         this.log.warn("clipboard: " + err.message);
       }
     });
-    this.clipboard.start();
+    // P-25 guard: when the desktop shell's in-process clipboard bridge is on,
+    // do NOT start the PowerShell-polling watcher. The bridge (desktop/main.mjs
+    // → electron.clipboard.readText()) replaces a PowerShell derivation that
+    // inevitably fails under the 0xC0000142 lineage — every powershell.exe
+    // spawned from this daemon's ancestry dies in GUI initialisation before
+    // Get-Clipboard ever runs (附记十二/十八; same lineage as the explorer.exe
+    // note in desktop/main.mjs). The flag is PATCHed into config.json by the
+    // desktop shell before/while the bridge runs, so reading it here at init
+    // is reliable; with the bridge off this behaves exactly as before. The
+    // watcher object is still constructed so stop() stays a no-op-safe call.
+    if (this.config.get("clipboardBridge") === true) {
+      this.log.info("clipboard: PowerShell watcher not started (desktop in-process bridge active)");
+    } else {
+      this.clipboard.start();
+    }
 
     // The capture proxy does what a kernel filter driver would: it sees traffic
     // from any application pointed at it, with no signing requirement. Off by

@@ -365,11 +365,16 @@ export async function runBt({ downloader, task, controller, progressCb }) {
       // after 100%. Zero seed time = the task completes when the file does.
       "--seed-time=0",
     ];
-    // P-10: forward the proxy explicitly (task value wins over Settings), so
-    // aria2c never silently follows an ambient env proxy instead of ours.
+    // P-10/P-22: forward the proxy the downloader already chose — task.proxy
+    // here IS prepared.proxy, selectRunProxy's per-run output (a per-task
+    // value wins; mode none = direct; manual = the Settings value; system =
+    // the OS discovery with noProxy applied). This used to fall back to
+    // config.proxy on its own, which resurrected a proxy in none mode behind
+    // the GUI's "直连=忽略一切代理" promise, and never applied the system
+    // discovery at all.
     // See the module header: BT needs UDP/direct egress, so in an
     // HTTP-CONNECT-only environment this is a courtesy, not a fix.
-    const proxy = String(task.proxy || downloader.config.get("proxy") || "").trim();
+    const proxy = String(task.proxy || "").trim();
     if (proxy) args.push("--all-proxy=" + proxy);
     args.push(task.url);
 

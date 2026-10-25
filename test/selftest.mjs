@@ -681,7 +681,10 @@ const hashFile = async (p) => {
   });
   await suite.test("serves status and task list", async () => {
     const st = await call("GET", "/api/status");
-    assert.equal(st.json.version, "1.0.0");
+    // 版本不再钉死字面量:package.json 升版(1.1.0/1.2.0…)曾让此断言过期。
+    // 断言它与 src/version.mjs 的单一事实来源一致即可。
+    const { VERSION } = await import("../src/version.mjs");
+    assert.equal(st.json.version, VERSION);
     assert.ok(st.json.queue);
     const list = await call("GET", "/api/tasks");
     assert.ok(Array.isArray(list.json.tasks));

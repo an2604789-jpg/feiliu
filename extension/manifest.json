@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Send downloads to the FeiLiu (飞流) daemon and catch media streams.",
   "permissions": [
+    "alarms",
     "cookies",
     "contextMenus",
     "nativeMessaging",

@@ -78,6 +78,18 @@ export const DEFAULT_CONFIG = {
   monitorClipboard: true,
 
   /**
+   * P-25: clipboard watching done by the desktop shell's in-process bridge
+   * (desktop/main.mjs polls electron.clipboard and POSTs /api/tasks). While
+   * true the daemon does not start its own PowerShell-polling ClipboardWatcher
+   * — on this host every powershell.exe spawned from the daemon's lineage dies
+   * in GUI initialisation (0xC0000142, desktop/main.mjs), so that watcher could
+   * never read the clipboard anyway. The desktop shell PATCHes this true when
+   * it starts the bridge; a daemon run without the desktop shell keeps the old
+   * behaviour.
+   */
+  clipboardBridge: false,
+
+  /**
    * Ask before adding. While on, adds whose source is the browser extension
    * or the clipboard watcher do not enter the queue directly: they sit in a
    * pending list (GET /api/pending) until approved (with optional
@@ -114,6 +126,20 @@ export const DEFAULT_CONFIG = {
    * message instead of a silent no-op.
    */
   aria2cPath: "",
+  /**
+   * 批-8: optional explicit yt-dlp path; empty = search PATH then the app
+   * root for the packaged binary (see findYtDlp in src/ytdlp.mjs). Consumed
+   * by the smart fallback (an HTML page / a failed probe gets resolved to a
+   * direct link) and by full-delegation tasks (kind "ytdlp").
+   */
+  ytdlpPath: "",
+  /**
+   * 批-8: when yt-dlp cannot be found anywhere, download the official release
+   * binary into the app root (src/ytdlp.mjs::downloadYtDlp). Default false —
+   * fetching and running an executable is the user's explicit decision, and
+   * this flag IS the confirmation; nothing is ever downloaded while it is off.
+   */
+  ytdlpAutoDownload: false,
   categorizeByType: true,
   overwriteExisting: "rename",   // rename | overwrite | skip
   startQueueAutomatically: true,
@@ -229,6 +255,13 @@ export class Config extends EventEmitter {
     // a number or an object from a hand-edited config.json — findAria2c would
     // then probe a nonsense path and BT tasks would fail confusingly.
     c.aria2cPath = typeof c.aria2cPath === "string" ? c.aria2cPath.trim() : "";
+    // 批-8: the yt-dlp keys follow the same discipline as their aria2c and
+    // remoteAccess counterparts — a plain trimmed string or back to "not
+    // configured" (findYtDlp must not probe a nonsense path), and the
+    // auto-download switch is explicit-true-only because it fetches and runs
+    // a binary from the internet.
+    c.ytdlpPath = typeof c.ytdlpPath === "string" ? c.ytdlpPath.trim() : "";
+    c.ytdlpAutoDownload = c.ytdlpAutoDownload === true || c.ytdlpAutoDownload === "true";
     // Asking before adding is the safe default, so only an explicit false (or
     // its string form, which a hand-edited config.json may carry) turns it
     // off; a missing or malformed value keeps the default rather than
@@ -238,6 +271,11 @@ export class Config extends EventEmitter {
     // Remote access widens the blast radius (LAN-visible file writer), so the
     // same "explicit true only" rule as askBeforeAdd applies.
     c.remoteAccess = c.remoteAccess === true || c.remoteAccess === "true";
+    // P-25 clipboard bridge: same "explicit true only" rule. A missing or
+    // malformed value stays false, so a daemon run without the desktop shell
+    // keeps watching the clipboard itself (or at least trying to) exactly as
+    // before; only the desktop shell turning the bridge on writes a real true.
+    c.clipboardBridge = c.clipboardBridge === true || c.clipboardBridge === "true";
     const cp = c.captureProxy || {};
     c.captureProxy = {
       enabled: Boolean(cp.enabled),

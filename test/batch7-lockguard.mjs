@@ -39,11 +39,23 @@ async function freshHome(tag) {
 }
 
 function startDaemon(home) {
-  return spawn(process.execPath, [ENTRY, "daemon"], {
+  const child = spawn(process.execPath, [ENTRY, "daemon"], {
     env: { ...process.env, DOWNLOADX_HOME: home },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
+  // P-23: remember everything the daemon printed, so a failed start/takeover
+  // reports WHAT the daemon said instead of dying on a bare assert.
+  child.dxTail = "";
+  child.stdout.on("data", (d) => { child.dxTail += d; });
+  child.stderr.on("data", (d) => { child.dxTail += d; });
+  return child;
+}
+
+/** P-23: the last lines of a daemon child's combined stdout/stderr. */
+function tailOf(child, n = 25) {
+  const lines = String((child && child.dxTail) || "").split(/\r?\n/).filter(Boolean);
+  return lines.length ? lines.slice(-n).join("\n    ") : "(daemon printed nothing)";
 }
 
 /** Collect a child's stdout/stderr so a stand-down message can be asserted. */
@@ -54,8 +66,10 @@ function collect(child) {
   return () => out;
 }
 
-// 45s: same budget as batch1-singleton (ready times can exceed 20s under load).
-async function waitHealthy(home, timeoutMs = 45000) {
+// 60s (P-23): batch1-singleton's 45s budget flaked once under load on the
+// takeover scenario; a healthy start gets headroom, and a timed-out one now
+// reports the daemon's own output instead of a bare assert.
+async function waitHealthy(home, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 200));
@@ -137,6 +151,7 @@ test("new-format lock naming a dead pid is broken and taken over", async () => {
   await writeLock(home, { pid, port: await deadPort(), token: "0".repeat(48), startedAt: new Date().toISOString() });
   const daemon = track(startDaemon(home));
   const rt = await waitHealthy(home);
+  if (!rt) console.log("  [diag] daemon tail:\n    " + tailOf(daemon));
   assert.ok(rt, "daemon broke the dead-pid lock and became healthy");
   assert.notEqual(rt.pid, pid, "the new daemon is a different process");
   const lock = await readLock(home);
@@ -155,6 +170,7 @@ test("pid reused by an unrelated live process, probe fails: lock broken, takeove
   });
   const daemon = track(startDaemon(home));
   const rt = await waitHealthy(home);
+  if (!rt) console.log("  [diag] daemon tail (takeover scenario, P-23):\n    " + tailOf(daemon));
   assert.ok(rt, "daemon must not be blocked by a reused pid; it probes, fails and takes over");
   assert.equal(daemon.exitCode, null, "the new daemon is the one serving");
   const lock = await readLock(home);
@@ -168,6 +184,7 @@ test("a live holder is confirmed by the probe and yielded to; lock keeps its ide
   const home = await freshHome("realholder");
   const first = track(startDaemon(home));
   const rtA = await waitHealthy(home);
+  if (!rtA) console.log("  [diag] first daemon tail:\n    " + tailOf(first));
   assert.ok(rtA, "first daemon became healthy");
 
   // The stamp written after listen() is the probe's data: without it the
@@ -213,6 +230,7 @@ test("legacy lock (pid+startedAt only): live pid still yielded to, dead pid stil
   await writeLock(homeDead, { pid: await deadPid(), startedAt: new Date().toISOString() });
   const daemon2 = track(startDaemon(homeDead));
   const rt = await waitHealthy(homeDead);
+  if (!rt) console.log("  [diag] legacy dead-pid daemon tail:\n    " + tailOf(daemon2));
   assert.ok(rt, "daemon broke the legacy dead-pid lock and became healthy");
   await shutdownDaemon(rt);
   await waitExit(daemon2);

@@ -1096,6 +1096,174 @@ async function transferBrowserDownload(item) {
   return reply;
 }
 
+// ============================================================================
+// P-24: MV3 worker 冷启动补扫 + 同 id 去重
+//
+// onCreated 只在 worker 存活期间触发,MV3 service worker 空闲 ~30 秒即被回收,
+// worker 死亡期间的下载创建事件全部丢失——worker 每次冷启动时用
+// chrome.downloads.search({limit:5}) 把"近窗内、仍在进行"的下载重新交给接管
+// 流程(下方顶层调用)。与 onCreated 的去重:同一下载 id 只处理一次——
+//   * 内存 Set 管"本次 worker 生命周期"(onCreated 与补扫共享);
+//   * chrome.storage.local 管"跨 worker 重启",沿用 TAKEOVER_PENDING 的
+//     既有模式(TTL + 容量上限 + 读改写落盘)。
+// ============================================================================
+
+/** 去重记录的 storage key / TTL / 容量:TTL 与 TAKEOVER_PENDING 同窗。 */
+const TAKEOVER_SWEEP_KEY = "takeoverSeenDownloadIds";
+const TAKEOVER_SWEEP_TTL_MS = 10 * 60_000;
+const TAKEOVER_SWEEP_MAX = 50;
+/** 只补扫"近窗"下载:startTime 距今超过该时长的老下载不补抢。 */
+const TAKEOVER_SWEEP_WINDOW_MS = 2 * 60_000;
+
+/** 本次 worker 生命周期内已处理过的下载 id(onCreated 与补扫共享)。 */
+const seenDownloadIds = new Set();
+
+/**
+ * 启动补扫候选判定(纯函数,回归套件直接测)。
+ *
+ * search 结果交给接管流程之前依次过滤:
+ *   1) 无 id / 缺 startTime / 非 in_progress —— ignore(完成的下载不抢);
+ *   2) startTime 不在近窗(TAKEOVER_SWEEP_WINDOW_MS)内 —— ignore(老下载不补抢);
+ *   3) 内存 Set 已见 —— skip(onCreated 与补扫并发到达时后到者让路);
+ *   4) storage 记录仍在 TTL 内 —— skip(跨 worker 重启不重复处理);
+ *   5) 其余 —— process。
+ * ignore/skip 都不处理,区别只是"不够格"还是"够格但已处理过"。
+ *
+ * @param {{id?:number|string, state?:string, startTime?:string}} item
+ *   chrome.downloads.DownloadItem 的相关子集
+ * @param {{now?:number, inMemorySeen?:boolean, persistedSeen?:Object<string,{at?:number}>,
+ *           windowMs?:number, ttlMs?:number}} [ctx]
+ * @returns {{act:"process"|"skip"|"ignore", reason?:string}}
+ */
+function evaluateSweepCandidate(item, ctx = {}) {
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const id = item && item.id;
+  if (id === undefined || id === null || id === "") {
+    return { act: "ignore", reason: "no download id" };
+  }
+  const startedAt = Date.parse(String(item.startTime || ""));
+  if (!Number.isFinite(startedAt)) {
+    return { act: "ignore", reason: "no parseable startTime" };
+  }
+  if (String(item.state || "") !== "in_progress") {
+    return { act: "ignore", reason: "state " + (item.state || "(none)") + " is not in_progress" };
+  }
+  const windowMs = Number.isFinite(ctx.windowMs) ? ctx.windowMs : TAKEOVER_SWEEP_WINDOW_MS;
+  if (now - startedAt > windowMs) {
+    return {
+      act: "ignore",
+      reason: "startTime outside the " + Math.round(windowMs / 1000) + "s sweep window"
+    };
+  }
+  if (ctx.inMemorySeen) {
+    return { act: "skip", reason: "already processed in this worker lifetime" };
+  }
+  const ttlMs = Number.isFinite(ctx.ttlMs) ? ctx.ttlMs : TAKEOVER_SWEEP_TTL_MS;
+  const entry = ctx.persistedSeen && ctx.persistedSeen[String(id)];
+  const at = entry && Number(entry.at);
+  if (Number.isFinite(at) && now - at < ttlMs) {
+    return { act: "skip", reason: "seen within the persisted TTL" };
+  }
+  return { act: "process" };
+}
+
+/**
+ * 记录"这个下载 id 已处理过"到 chrome.storage.local(沿 TAKEOVER_PENDING
+ * 既有模式:TTL 清理 + 容量上限 + 覆盖写)。尽力而为:失败只影响跨重启去重。
+ * @param {number|string} id
+ */
+async function markDownloadSeen(id) {
+  const data = await storageGetLocal(TAKEOVER_SWEEP_KEY);
+  const raw = data && data[TAKEOVER_SWEEP_KEY];
+  const map = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const now = Date.now();
+  for (const k of Object.keys(map)) {
+    const at = map[k] && map[k].at;
+    if (!Number.isFinite(at) || now - at > TAKEOVER_SWEEP_TTL_MS) delete map[k];
+  }
+  map[String(id)] = { at: now };
+  const keys = Object.keys(map);
+  while (keys.length > TAKEOVER_SWEEP_MAX) {
+    let oldest = keys[0];
+    for (const k of keys) if (map[k].at < map[oldest].at) oldest = k;
+    delete map[oldest];
+    keys.splice(keys.indexOf(oldest), 1);
+  }
+  await storageSetLocal(TAKEOVER_SWEEP_KEY, map);
+}
+
+/**
+ * 接管候选项的完整处理(getTakeoverConfig → evaluateTakeover → 转交/询问)。
+ * onCreated 与启动补扫共用这一段;同 id 去重由调用方负责。
+ * @param {{id:number, url:string, referrer?:string, filename?:string}} item
+ */
+async function processTakeoverCandidate(item) {
+  const cfg = await getTakeoverConfig();
+  if (cfg.mode === "off") return;
+  const decision = evaluateTakeover(item, cfg);
+  if (decision.act === "ignore" || decision.act === "pass") return;
+  if (decision.act === "transfer") {
+    await transferBrowserDownload(item);
+    return;
+  }
+  // notify 模式:只询问,不打断浏览器下载;点击通知才执行转交。
+  const notificationId = "downloadx-takeover-" + item.id;
+  notifyTakeover(notificationId, "转交飞流? " + takeoverDisplayName(item));
+  await rememberPendingTakeover(notificationId, item);
+}
+
+/**
+ * P-24 启动补扫:worker 每次冷启动跑一次(下方顶层调用),把 worker 死亡期间
+ * 创建的近窗下载重新交给接管流程。判定与内存占席之间不留 await:与 onCreated
+ * 的同步占席在单线程下互斥,同一 id 不会两边都处理。
+ * @returns {Promise<number>} 本次实际进入接管流程的条数(诊断用)
+ */
+async function sweepRecentDownloadsForTakeover() {
+  const api =
+    typeof chrome !== "undefined" &&
+    chrome.downloads &&
+    typeof chrome.downloads.search === "function"
+      ? chrome.downloads
+      : null;
+  if (!api) return 0;
+  const items = await new Promise((resolve) => {
+    let settled = false;
+    const done = (list) => {
+      if (settled) return;
+      settled = true;
+      resolve(Array.isArray(list) ? list : []);
+    };
+    try {
+      // 回调式与 Promise 式(MV3)都要收口,谁先到算谁。
+      const maybe = api.search({ limit: 5 }, done);
+      if (maybe && typeof maybe.then === "function") maybe.then(done, () => done([]));
+    } catch {
+      done([]);
+    }
+  });
+  const data = await storageGetLocal(TAKEOVER_SWEEP_KEY);
+  const raw = data && data[TAKEOVER_SWEEP_KEY];
+  const persisted = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  let processed = 0;
+  for (const item of items) {
+    const verdict = evaluateSweepCandidate(item, {
+      now: Date.now(),
+      inMemorySeen: seenDownloadIds.has(item && item.id),
+      persistedSeen: persisted,
+    });
+    if (verdict.act !== "process") continue;
+    seenDownloadIds.add(item.id);
+    await markDownloadSeen(item.id);
+    try {
+      await processTakeoverCandidate(item);
+      processed += 1;
+    } catch (err) {
+      console.warn("downloadx: sweep takeover failed:", err && err.message);
+    }
+  }
+  return processed;
+}
+
 // MV3 的浏览器事件监听必须顶层同步注册才能在 worker 重启后仍收到事件,
 // 所以 downloads/notifications 监听在这里常驻;"off 不监听"落实为:off 模式
 // 下处理函数第一跳就返回,零通知、零 cancel、零 native 消息。
@@ -1109,18 +1277,13 @@ if (
     (async () => {
       try {
         if (!item || item.id === undefined) return;
-        const cfg = await getTakeoverConfig();
-        if (cfg.mode === "off") return;
-        const decision = evaluateTakeover(item, cfg);
-        if (decision.act === "ignore" || decision.act === "pass") return;
-        if (decision.act === "transfer") {
-          await transferBrowserDownload(item);
-          return;
-        }
-        // notify 模式:只询问,不打断浏览器下载;点击通知才执行转交。
-        const notificationId = "downloadx-takeover-" + item.id;
-        notifyTakeover(notificationId, "转交飞流? " + takeoverDisplayName(item));
-        await rememberPendingTakeover(notificationId, item);
+        // P-24 去重:同一下载 id 只处理一次。先同步占内存席位(与启动补扫
+        // 共享,占席与判定之间不留 await),再落 chrome.storage——MV3 worker
+        // 随时被回收,重启后的启动补扫靠这条记录跳过已处理过的下载。
+        if (seenDownloadIds.has(item.id)) return;
+        seenDownloadIds.add(item.id);
+        await markDownloadSeen(item.id);
+        await processTakeoverCandidate(item);
       } catch (err) {
         console.warn("downloadx: takeover check failed:", err && err.message);
       }
@@ -1162,6 +1325,46 @@ if (
   });
 }
 
+// ============================================================================
+// P-24: MV3 keepalive(周期闹钟)
+//
+// MV3 service worker 空闲 ~30 秒即被回收,上方 downloads/notifications 等
+// 顶层监听随实例一起消失,浏览器下载接管因此漏事件。周期闹钟把 worker 按固定
+// 节奏唤醒:onAlarm 空处理即足——只要顶层有已注册的 onAlarm 监听,Chrome 就会
+// 为每次闹钟触发重启 worker 并重跑本文件顶层,所有监听(含 onCreated)随之
+// 常驻,上方的启动补扫也随之每次冷启动都跑一遍。0.4 分钟(24s)短于 30s 空闲
+// 回收线;Chrome 若把下限钳到 30s 也不影响目的(仍是周期唤醒)。
+// ============================================================================
+
+if (
+  typeof chrome !== "undefined" &&
+  chrome.alarms &&
+  typeof chrome.alarms.create === "function" &&
+  chrome.alarms.onAlarm &&
+  typeof chrome.alarms.onAlarm.addListener === "function"
+) {
+  try {
+    const created = chrome.alarms.create("keepalive", { periodInMinutes: 0.4 });
+    if (created && typeof created.catch === "function") created.catch(() => { /* 桩环境 */ });
+  } catch { /* 闹钟不可用时静默:worker 行为退回改动前 */ }
+  chrome.alarms.onAlarm.addListener(() => {
+    // 空处理:唤醒本身就是目的。状态恢复全部由顶层重跑完成(补扫在下方)。
+  });
+}
+
+// P-24: worker 每次冷启动补扫一次近窗下载,捡回 worker 死亡期间的下载创建
+// 事件。onCreated 在 worker 存活期间照常先到,补扫靠 evaluateSweepCandidate
+// 的内存/持久化去重让路。
+if (
+  typeof chrome !== "undefined" &&
+  chrome.downloads &&
+  typeof chrome.downloads.search === "function"
+) {
+  sweepRecentDownloadsForTakeover().catch((err) =>
+    console.warn("downloadx: startup sweep failed:", err && err.message)
+  );
+}
+
 // Batch-1 回归测试(test/batch1-capture.mjs)在带 chrome 桩的沙箱里执行本
 // 文件,通过这个全局读取纯函数。仅在测试探针显式置位时挂载,真实
 // service worker 里不会创建任何全局。
@@ -1196,5 +1399,17 @@ if (typeof globalThis !== "undefined" && globalThis.__DOWNLOADX_BATCH2_TEST_PROB
     __resetTakeoverConfigCacheForTest: () => {
       takeoverConfigCache = { at: 0, mode: "off", extensions: [] };
     }
+  };
+}
+
+// 包8回归测试(test/batch8-bridge.mjs)读取 P-24 启动补扫的纯判定与常量;
+// 同样只在测试探针显式置位时挂载,真实 service worker 里不创建任何全局。
+if (typeof globalThis !== "undefined" && globalThis.__DOWNLOADX_BATCH8_TEST_PROBE__ === true) {
+  globalThis.__downloadxBatch8Hooks = {
+    evaluateSweepCandidate,
+    TAKEOVER_SWEEP_KEY,
+    TAKEOVER_SWEEP_TTL_MS,
+    TAKEOVER_SWEEP_MAX,
+    TAKEOVER_SWEEP_WINDOW_MS
   };
 }

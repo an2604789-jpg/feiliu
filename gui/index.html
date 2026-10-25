@@ -238,6 +238,14 @@
   [data-theme="dark"] .warn-box{color:var(--warn);}
   .status-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;}
   .status-chip.on{background:var(--ok-weak);color:var(--ok);} .status-chip.off{background:var(--panel-3);color:var(--dim);}
+  .hint a{color:var(--accent);}
+  /* yt-dlp 来源徽标（批-8 包2）：任务卡上的行叶子节点，恒在 DOM 里、空文案即隐藏 */
+  .src-badge{
+    display:none;align-items:center;flex:0 0 auto;padding:1px 8px;border-radius:20px;
+    font-size:10.5px;font-weight:600;white-space:nowrap;cursor:pointer;
+    background:var(--info-weak);color:var(--info);
+  }
+  .src-badge.show{display:inline-flex;}
   .form-actions{display:flex;gap:10px;margin-top:4px;}
   .result-row{border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;font-size:12.5px;}
   .result-row .rh{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
@@ -552,6 +560,15 @@
               <div class="switch">
                 <label class="track"><input type="checkbox" id="cfg-insecure"><span class="track"></span></label>
                 <div class="stext"><b>跳过 TLS 证书校验</b><div class="ssub">仅在来源可信、确有必要时开启，会降低安全性</div></div>
+              </div>
+              <div class="field full">
+                <label style="display:flex;align-items:center;gap:8px">yt-dlp 路径（流媒体解析，留空自动查找）<span class="status-chip off" id="ytdlpState">检测中…</span></label>
+                <input type="text" id="cfg-ytdlpPath" placeholder="yt-dlp">
+                <span class="hint">用于需要 yt-dlp 解析的流媒体链接；未安装不影响普通下载。未安装可参考 <a id="ytdlpGuideLink" href="https://github.com/yt-dlp/yt-dlp#installation" target="_blank" rel="noopener noreferrer">安装指引</a>，或开启下方自动下载</span>
+              </div>
+              <div class="switch">
+                <label class="track"><input type="checkbox" id="cfg-ytdlpAutoDownload"><span class="track"></span></label>
+                <div class="stext"><b>自动下载 yt-dlp</b><div class="ssub">检测不到 yt-dlp 时自动下载官方版本；关闭则不下载（相关任务会提示安装）</div></div>
               </div>
             </div>
           </div>
@@ -876,6 +893,24 @@
   </div>
 </div>
 
+<!-- 任务详情浮层（批-8 包2）：yt-dlp 来源与可选清晰度只读展示，不做切换交互 -->
+<div class="overlay" id="taskOverlay">
+  <div class="modal" style="width:520px">
+    <div class="modal-head"><span class="h">任务详情</span>
+      <button class="btn icon ghost" data-close="taskOverlay"><span class="ic" data-ic="close"></span></button></div>
+    <div class="modal-body">
+      <div class="field"><label>文件</label><div id="td-name" style="font-weight:600;word-break:break-all"></div></div>
+      <div class="field"><label>来源</label><div id="td-source"></div></div>
+      <div class="field" id="td-formats-field">
+        <label>可选清晰度（服务器报告的 formats）</label>
+        <div id="td-formats" class="logbox" style="max-height:36vh"></div>
+        <span class="hint">仅供了解；需要其他清晰度时请按对应链接重新下单（切换清晰度=重新下单），此处不提供切换。</span>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close="taskOverlay">关闭</button></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -1048,6 +1083,57 @@ function sanitizeQueueRows(rows){
   }
   if (out.length > 64) return { ok:false, error:"分组最多 64 个", queues: [] };
   return { ok:true, queues: out, error: "" };
+}
+/* ---- 批-8 包2：yt-dlp 设置区块与任务详情浮层（纯逻辑） ---- */
+
+/** yt-dlp 官方安装指引（规格指定；桌面窗口拒绝外跳时降级为复制链接）。 */
+const YT_DLP_GUIDE_URL = "https://github.com/yt-dlp/yt-dlp#installation";
+
+/**
+ * 设置页 yt-dlp 状态徽标。capabilities.ytdlp 的容错读取（包1 下发，形态二选一都认）：
+ *   · 对象 {found,version,path} —— found 明确为 false 即未安装；found 缺省时
+ *     有 version/path 即视为已找到；
+ *   · 字符串（capabilities.ffmpeg 同款，即路径）—— 非空即已找到；
+ *   · 其余（旧 daemon 未下发该键）—— 保守显示“未安装”。
+ */
+function ytdlpStatusView(cap){
+  if (typeof cap === "string"){
+    return cap.trim()
+      ? { found:true, version:"", text:"已找到 yt-dlp" }
+      : { found:false, version:"", text:"未安装" };
+  }
+  if (cap && typeof cap === "object"){
+    const version = typeof cap.version === "string" ? cap.version.trim() : "";
+    const found = cap.found === true || (cap.found === undefined && !!(version || cap.path));
+    return found
+      ? { found:true, version, text:"已找到 yt-dlp" + (version ? " " + version : "") }
+      : { found:false, version:"", text:"未安装" };
+  }
+  return { found:false, version:"", text:"未安装" };
+}
+
+/**
+ * meta.ytdlp.formats → 任务详情浮层的可选清晰度文本行（只读展示，不提供切换；
+ * 切清晰度=重新下单，浮层里注明）。条目容忍字符串/对象两种形态：对象按
+ * format_id · ext · 分辨率 · 大小 · 备注 拼一行；fmt 注入字节格式化器（单测假实现）。
+ */
+function ytdlpFormatLines(formats, fmt){
+  if (!Array.isArray(formats)) return [];
+  const lines = [];
+  for (const f of formats){
+    if (typeof f === "string"){ if (f.trim()) lines.push(f); continue; }
+    if (!f || typeof f !== "object") continue;
+    const parts = [];
+    if (f.format_id !== undefined && f.format_id !== null && String(f.format_id) !== "") parts.push(String(f.format_id));
+    if (f.ext) parts.push(String(f.ext));
+    if (f.resolution) parts.push(String(f.resolution));
+    else if (f.height) parts.push(String(f.height) + "p");
+    const size = Number(f.filesize != null ? f.filesize : f.filesize_approx);
+    if (isFinite(size) && size > 0) parts.push(typeof fmt === "function" ? fmt(size) : String(size));
+    if (f.format_note) parts.push(String(f.format_note));
+    if (parts.length) lines.push(parts.join(" · "));
+  }
+  return lines;
 }
 /* ==== GUI-PURE-END ==== */
 const CAT_META = {
@@ -1408,6 +1494,18 @@ function rowShape(t){
  * F 注入格式化器 {bytes,speed,dur,errText,name,statusCn},单测用假实现即可回归。
  * checked 是唯一不属于任务数据的字段,由调用方(state.checkedIds)传入。
  */
+/**
+ * 任务 meta 里的 yt-dlp 解析结果 → 任务卡“来源”徽标文案；无 yt-dlp 信息返回 ""。
+ * meta.ytdlp 由包1 写入（{extractor, formats}）；meta 未下发时（旧 daemon 的
+ * taskView 不透出 meta，src/task.mjs）徽标自然不渲染。放在 ROWSYNC 段内是因为
+ * rowVals 依赖它，而本段被 test/batch2-render.mjs 原样提取执行。
+ */
+function ytdlpSourceBadge(meta){
+  const y = meta && typeof meta === "object" ? meta.ytdlp : null;
+  if (!y || typeof y !== "object") return "";
+  const extractor = typeof y.extractor === "string" ? y.extractor.trim() : "";
+  return extractor ? "来源:yt-dlp(" + extractor + ")" : "来源:yt-dlp";
+}
 function rowVals(t, F, checked){
   const running = t.status==="downloading" || t.status==="connecting";
   const known = t.lengthKnown !== false && t.totalBytes !== null && t.totalBytes !== undefined;
@@ -1459,6 +1557,7 @@ function rowVals(t, F, checked){
     name: F.name(t),
     nameTitle: displayTaskUrl(t),
     url: displayTaskUrl(t),
+    srcBadge: ytdlpSourceBadge(t.meta),
     checked: !!checked,
   };
 }
@@ -1476,6 +1575,7 @@ function diffRowVals(a, b){
   if (a.name !== b.name) d.name = b.name;
   if (a.nameTitle !== b.nameTitle) d.nameTitle = b.nameTitle;
   if (a.url !== b.url) d.url = b.url;
+  if (a.srcBadge !== b.srcBadge) d.srcBadge = b.srcBadge;
   if (a.checked !== b.checked) d.checked = b.checked;
   return Object.keys(d).length ? d : null;
 }
@@ -1571,13 +1671,18 @@ function rowActionsHtml(t){
 function renderTask(t){
   const name = esc(baseName(t));
   const statusCn = STATUS_CN[t.status] || t.status;
+  // 徽标是行叶子节点：重建路径直接渲染内容，与增量路径（applyRowDiff 写
+  // textContent）保持同值——否则 adoptRow 记下的基线与 DOM 不一致，徽标
+  // 会一直空白到下一次 diff。
+  const badge = ytdlpSourceBadge(t.meta);
 
   return '<div class="task" draggable="'+(state.sortMode==="default"?"true":"false")+'" data-id="'+t.id+'">'+
     '<input type="checkbox" class="selbox" data-id="'+esc(t.id)+'"'+(state.checkedIds.has(t.id)?" checked":"")+
       ' title="选择（按住 Shift 点击可范围选择）">'+
     '<div class="grip" title="'+(state.sortMode==="default"?"拖拽调整顺序":"已按其他方式排序，拖拽暂停")+'">⠿</div>'+
     '<div class="info">'+
-      '<div class="top"><span class="name" title="'+esc(displayTaskUrl(t))+'">'+name+'</span></div>'+
+      '<div class="top"><span class="name" title="'+esc(displayTaskUrl(t))+'">'+name+'</span>'+
+      '<span class="src-badge'+(badge?" show":"")+'" data-id="'+esc(t.id)+'" title="点击查看可选清晰度（切清晰度=重新下单）">'+esc(badge)+'</span></div>'+
       '<div class="url" title="'+esc(displayTaskUrl(t))+'">'+esc(displayTaskUrl(t))+'</div>'+
       '<div class="prog">'+rowProgHtml(t)+'</div>'+
     '</div>'+
@@ -1604,6 +1709,7 @@ function cacheRowCommon(el){
     cb: el.querySelector(".selbox"),
     name: el.querySelector(".name"),
     url: el.querySelector(".url"),
+    srcBadge: el.querySelector(".src-badge"),
     pill: el.querySelector(".pill"),
     actions: el.querySelector(".actions"),
     prog: el.querySelector(".prog"),
@@ -1655,6 +1761,10 @@ function applyRowDiff(el, d){
   if (d.name !== undefined) c.name.textContent = d.name;
   if (d.nameTitle !== undefined) c.name.title = d.nameTitle;
   if (d.url !== undefined){ c.url.textContent = d.url; c.url.title = d.url; }
+  if (d.srcBadge !== undefined && c.srcBadge){
+    c.srcBadge.textContent = d.srcBadge;
+    c.srcBadge.classList.toggle("show", d.srcBadge !== "");
+  }
   if (d.checked !== undefined) c.cb.checked = d.checked;
 }
 /**
@@ -1704,6 +1814,11 @@ function syncRows(box, tasks){
 function wireRowActions(scope){
   scope.querySelectorAll(".ab[data-a]").forEach((b)=>{
     b.onclick = ()=> onAction(b.dataset.a, b.dataset.id);
+  });
+  // yt-dlp 来源徽标：点击打开任务详情浮层（可选清晰度只读列表，不做切换）。
+  // 徽标 span 永不重建（applyRowDiff 只写 text/class），这里接一次即可。
+  scope.querySelectorAll(".src-badge").forEach((b)=>{
+    b.onclick = ()=> openTaskDetail(b.dataset.id);
   });
 }
 async function onAction(action,id){
@@ -2071,6 +2186,13 @@ async function refresh(){
         document.getElementById("ffmpegHint").innerHTML = ffmpeg
           ? '<span style="color:var(--ok)">已检测到 ffmpeg：'+esc(ffmpeg)+'</span>'
           : '<span style="color:var(--warn)">未检测到 ffmpeg，音视频合并功能将不可用</span>';
+        // yt-dlp 状态徽标（设置页）：capabilities.ytdlp 由包1 下发，容错见 ytdlpStatusView
+        const ytChip = document.getElementById("ytdlpState");
+        if (ytChip){
+          const ytv = ytdlpStatusView(status.capabilities.ytdlp);
+          ytChip.textContent = ytv.text;
+          ytChip.className = "status-chip " + (ytv.found ? "on" : "off");
+        }
       }
       if (status.version) document.getElementById("appVer").textContent = "v"+status.version;
     }
@@ -2337,6 +2459,22 @@ document.getElementById("cv-btnOk").onclick = async ()=>{
   }
 };
 
+/* ---------------- 任务详情浮层（批-8 包2：yt-dlp 来源与可选清晰度只读展示） ---------------- */
+// 入口是任务卡上的“来源:yt-dlp(<extractor>)”徽标。清晰度只列不做切换——
+// 切清晰度=重新下单（以对应链接重新提交任务），浮层 hint 里注明。
+const taskOverlay = document.getElementById("taskOverlay");
+function openTaskDetail(id){
+  const t = state.tasks.find((x)=>x.id===id);
+  if (!t) return;
+  document.getElementById("td-name").textContent = baseName(t);
+  document.getElementById("td-source").textContent = ytdlpSourceBadge(t.meta) || "直接下载";
+  const lines = ytdlpFormatLines(t.meta && t.meta.ytdlp ? t.meta.ytdlp.formats : null, fmtBytes);
+  document.getElementById("td-formats-field").style.display = lines.length ? "" : "none";
+  document.getElementById("td-formats").textContent = lines.join("\n");
+  taskOverlay.classList.add("show");
+}
+taskOverlay.addEventListener("click",(e)=>{ if(e.target===taskOverlay) taskOverlay.classList.remove("show"); });
+
 /* ---------------- 顶部操作 ---------------- */
 document.getElementById("btnNew").onclick=()=>openNew();
 document.getElementById("urlInput").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ openNew(); } });
@@ -2400,6 +2538,7 @@ document.addEventListener("keydown",(e)=>{
   if (newOverlay.classList.contains("show")) closeNew();
   if (approveOverlay.classList.contains("show")) closeApprove();
   if (convertOverlay.classList.contains("show")) convertOverlay.classList.remove("show");
+  if (taskOverlay.classList.contains("show")) taskOverlay.classList.remove("show");
 });
 
 document.getElementById("m-btnDir").onclick=async()=>{
@@ -2558,6 +2697,8 @@ function fillConfig(c){
   set("cfg-askBeforeAdd",c.askBeforeAdd);
   set("cfg-ffmpegPath",c.ffmpegPath);
   set("cfg-aria2cPath",c.aria2cPath);
+  set("cfg-ytdlpPath",c.ytdlpPath);
+  set("cfg-ytdlpAutoDownload",c.ytdlpAutoDownload);
   set("cfg-takeoverMode",(c.takeover&&c.takeover.mode)||"notify");
   set("cfg-takeoverExtensions",((c.takeover&&c.takeover.extensions)||[]).join(", "));
   // 队列分组表单缓冲：以配置为准回填（进入设置页/保存后各一次，刷新不回填，
@@ -2576,6 +2717,15 @@ document.getElementById("btnOpenDir").onclick=async()=>{
   if (!d){ toast("尚未设置默认目录","err"); return; }
   if (window.downloadx){ window.downloadx.showItem(d+"\\.").catch(()=>window.downloadx.openPath(d)); }
 };
+/* yt-dlp 安装指引（批-8 包2）：桌面窗口拒绝一切 window.open 与跨源导航
+   （desktop/main.mjs setWindowOpenHandler/will-navigate），点击降级为复制链接；
+   浏览器 GUI 直接跳转。 */
+document.getElementById("ytdlpGuideLink").addEventListener("click", async (e)=>{
+  if (!DESKTOP) return;
+  e.preventDefault();
+  await copyText(YT_DLP_GUIDE_URL);
+  toast("已复制安装指引链接，请粘贴到浏览器打开","ok");
+});
 document.getElementById("btnSaveCfg").onclick=async()=>{
   // 队列分组行先过校验：空组名/重名直接拦下（带着无效行保存会静默丢组）
   const qv = sanitizeQueueRows(state.queueRows || []);
@@ -2596,6 +2746,8 @@ document.getElementById("btnSaveCfg").onclick=async()=>{
     askBeforeAdd: document.getElementById("cfg-askBeforeAdd").checked,
     ffmpegPath: document.getElementById("cfg-ffmpegPath").value.trim(),
     aria2cPath: document.getElementById("cfg-aria2cPath").value.trim(),
+    ytdlpPath: document.getElementById("cfg-ytdlpPath").value.trim(),
+    ytdlpAutoDownload: document.getElementById("cfg-ytdlpAutoDownload").checked,
     takeover: {
       mode: document.getElementById("cfg-takeoverMode").value,
       extensions: document.getElementById("cfg-takeoverExtensions").value

@@ -456,6 +456,13 @@ export class ApiServer {
       // ---- status
       if (p === "/api/status" && req.method === "GET") {
         const { findFfmpeg } = await import("./merge.mjs");
+        // 批-8: the settings badge's data source (gui ytdlpStatusView reads
+        // this). findYtDlp is cached after its first ambient probe and the
+        // version subprocess runs once per resolved path, so status polling
+        // stays cheap. Shape: {found, version, path} — the GUI's tolerant
+        // object form; found=false carries an empty version and null path.
+        const { findYtDlp, ytDlpVersion } = await import("./ytdlp.mjs");
+        const ytBin = await findYtDlp(this.config.get("ytdlpPath") || undefined);
         return json(res, 200, {
           version: VERSION,
           uptimeMs: Date.now() - this.startedAt,
@@ -465,6 +472,11 @@ export class ApiServer {
           capabilities: {
             ffmpeg: await findFfmpeg(this.config.get("ffmpegPath") || undefined),
             clipboardWatch: this.config.get("monitorClipboard") !== false,
+            ytdlp: {
+              found: Boolean(ytBin),
+              version: ytBin ? await ytDlpVersion(ytBin) : "",
+              path: ytBin || null,
+            },
           },
           // Agent-integration surface: where the MCP entry points are and how
           // this daemon is bound, so the GUI's Agent page can render them.

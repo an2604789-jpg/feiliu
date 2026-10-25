@@ -26,6 +26,18 @@ jobs:
       # 仅 CI 需要,不进产品(README 的"零依赖"指运行时)。
       - name: Install packager
         run: npm install --no-save electron-builder@25 --no-package-lock
+      # 包3(批-8):打包前尽力把 yt-dlp 拾入 bin/(package.json 的 files 含
+      # "bin/**/*",bin/ 下的一切会进安装包)。yt-dlp 属可选增强:下载失败只发
+      # ::warning:: 不 fail 构建——运行时 findYtDlp 找不到内置副本会回退 PATH。
+      - name: Vendor yt-dlp (best-effort)
+        shell: bash
+        run: |
+          if curl -fL --retry 3 --connect-timeout 30 -o bin/yt-dlp.exe \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"; then
+            echo "vendored bin/yt-dlp.exe"
+          else
+            echo "::warning::yt-dlp download failed; shipping without it (runtime findYtDlp falls back to PATH)"
+          fi
       - name: Build Windows installers (NSIS setup + portable)
         # 发布由 release 作业负责;这里必须显式禁用 electron-builder 的
         # GitHub publishing(无 GH_TOKEN 时它直接报错退出)。
@@ -51,6 +63,18 @@ jobs:
           node-version: 24
       - name: Install packager
         run: npm install --no-save electron-builder@25 --no-package-lock
+      # 包3(批-8):同 windows 作业——yt-dlp_linux 尽力拾入 bin/,随 bin/**/*
+      # 进 AppImage/deb;失败只警告不阻断(运行时 findYtDlp 回退 PATH)。
+      - name: Vendor yt-dlp (best-effort)
+        shell: bash
+        run: |
+          if curl -fL --retry 3 --connect-timeout 30 -o bin/yt-dlp_linux \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"; then
+            chmod +x bin/yt-dlp_linux
+            echo "vendored bin/yt-dlp_linux"
+          else
+            echo "::warning::yt-dlp download failed; shipping without it (runtime findYtDlp falls back to PATH)"
+          fi
       - name: Build Linux packages (AppImage + deb)
         run: npx electron-builder --linux AppImage deb --x64 --publish never
       - uses: actions/upload-artifact@v4

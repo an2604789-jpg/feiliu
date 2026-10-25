@@ -116,6 +116,19 @@ const BATCH7_SUITES = [
   "batch7-docs.mjs",
 ];
 
+// Batch-8 (2026-10-26): yt-dlp integration (resolver + full delegation, fake
+// binary), GUI yt-dlp settings/badge/detail overlay, CI vendoring regression,
+// P-22 BT proxy straggler, and P-24/P-25 keepalive + clipboard bridge. Same
+// self-contained contract as the lists above: own runner, own throwaway
+// DOWNLOADX_HOME, clean exit.
+const BATCH8_SUITES = [
+  "batch8-ytdlp.mjs",
+  "batch8-gui.mjs",
+  "batch8-ci.mjs",
+  "batch8-tails.mjs",
+  "batch8-bridge.mjs",
+];
+
 /** Run one regression suite file as a child process; resolve its exit code. */
 function runRegressionSuite(label, file) {
   return new Promise((resolve) => {
@@ -144,6 +157,7 @@ async function runBatch1() {
     ["Batch-5 regression", BATCH5_SUITES],
     ["Batch-6 regression", BATCH6_SUITES],
     ["Batch-7 regression", BATCH7_SUITES],
+    ["Batch-8 regression", BATCH8_SUITES],
   ];
   for (const [label, files] of groups) {
     for (const file of files) {
@@ -152,7 +166,7 @@ async function runBatch1() {
     }
     total += files.length;
   }
-  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6+batch7 suites: " + (total - failed) +
+  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6+batch7+batch8 suites: " + (total - failed) +
     " passed, " + failed + " failed" + NL);
   return failed === 0 ? 0 : 1;
 }

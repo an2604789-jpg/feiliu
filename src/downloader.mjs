@@ -1179,6 +1179,15 @@ export class Downloader extends EventEmitter {
       else if (kind === "convert") {
         const { runConvert } = await import("./convert.mjs");
         result = await runConvert({ downloader: this, task: prepared, controller, progressCb });
+      }
+      // 批-8: full delegation as a first-class kind. A task that declares
+      // kind:"ytdlp" (API/CLI) hands the WHOLE job — extraction, download,
+      // landing — to the external yt-dlp engine (src/ytdlp.mjs, runBt's
+      // shape). The smart fallback's delegate arm reaches the same entry
+      // point directly from runHttp, not through this dispatch.
+      else if (kind === "ytdlp") {
+        const { runYtDlp } = await import("./ytdlp.mjs");
+        result = await runYtDlp({ downloader: this, task: prepared, controller, progressCb });
       } else result = await this.runHttp(prepared, controller, progressCb);
       // Retries that still ended in SUCCESS belong on the task record too
       // (P-8): a probe that needed three rounds, or a transfer whose segments
@@ -1263,14 +1272,220 @@ export class Downloader extends EventEmitter {
 
   // ------------------------------------------------------------------ HTTP
 
-  async runHttp(task, controller, progressCb) {
-    const info = await probe(task.url, {
-      headers: task.headers, proxy: task.proxy,
-      insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
-      // Transient failures at probe time must not fail the whole task.
-      maxRetries: this.config.get("maxRetries"),
-      retryBaseMs: this.config.get("retryBaseMs"),
+  // -------------------------------------------------- yt-dlp smart fallback
+  //
+  // 批-8 smart-fallback 触发点。The plain HTTP engine cannot fetch a video
+  // that lives behind a page, and a page-like or dead URL deserves the
+  // resolver's answer before the task dies. One trigger region, two arms:
+  //
+  //   ① the probe returned text/html — the "URL" is a web page; if yt-dlp is
+  //      available, resolve it to a direct link and download that instead
+  //      (through the existing http engine, unchanged); when the resolver
+  //      cannot help, the historical behaviour stays (the page downloads);
+  //   ② the probe failed — if yt-dlp is available, try resolving before the
+  //      task fails; when it cannot help, the original error keeps its
+  //      meaning, annotated with install guidance or the resolve's own
+  //      reason.
+  //
+  // When the resolved direct link itself fails (by the time runHttp throws,
+  // both the probe's and the engine's retry budgets are exhausted), the whole
+  // job falls back ONCE to full delegation (runYtDlp in src/ytdlp.mjs). The
+  // meta markers (ytdlpResolved / ytdlpDelegated) keep the chain finite: a
+  // converted URL is never re-resolved, and the delegate is never wrapped in
+  // another delegate. magnet:/ftp dispatch to their own kinds and never reach
+  // this path; the scheme is re-checked here anyway.
+
+  /** May THIS task use the yt-dlp fallback at all? */
+  #ytdlpMayFallback(task) {
+    if (!/^https?:/i.test(String(task.url || ""))) return false;
+    const meta = task.meta || null;
+    // The URL already came from a resolve (a direct link): a failure must go
+    // to the full-delegation arm, never back into the resolver.
+    if (meta && (meta.ytdlpResolved || meta.ytdlpDelegated)) return false;
+    // An exact output path is the user's explicit naming instruction (CLI
+    // `get -o`); silently swapping its content for a resolved video would
+    // betray it.
+    if (meta && meta.exactTarget) return false;
+    return true;
+  }
+
+  /**
+   * Resolve the task's URL with yt-dlp and build the task to download
+   * instead. Returns { ok:true, bin, info, picked, task } or
+   * { ok:false, available, reason } — never throws except on abort.
+   */
+  async #ytdlpConvert(task, controller, why) {
+    const ytdlp = await import("./ytdlp.mjs");
+    const bin = await ytdlp.ensureYtDlp({
+      explicit: String(this.config.get("ytdlpPath") || "").trim(),
+      autoDownload: this.config.get("ytdlpAutoDownload") === true,
+      signal: controller.signal,
+      onLog: (m) => this.emit("log", { taskId: task.id, message: m }),
     });
+    if (!bin) {
+      const auto = ytdlp.lastAutoDownloadError();
+      return {
+        ok: false, available: false,
+        reason: ytdlp.NO_YTDLP_MESSAGE + (auto ? "(自动下载也未成功:" + auto + ")" : ""),
+      };
+    }
+    if (controller.signal.aborted) throw abortError();
+    this.emit("log", {
+      taskId: task.id,
+      message: why + ",改用 yt-dlp 解析直链(" + path.basename(bin) + ")…",
+    });
+    let info;
+    let picked;
+    try {
+      info = await ytdlp.resolveMedia(bin, task.url, { signal: controller.signal });
+      picked = ytdlp.pickFormat(info);
+    } catch (err) {
+      if (controller.signal.aborted || err?.code === "ABORT_ERR") throw err;
+      return { ok: false, available: true, reason: String(err?.message || err) };
+    }
+    const title = sanitizeName(info.title || "", "yt-dlp-download");
+    const ext = picked.ext || info.ext || "mp4";
+    // An explicit task filename (API/CLI caller) stays; otherwise the
+    // resolved title plus the picked extension is the name (批-8 spec).
+    const filename = task.filename
+      ? sanitizeName(task.filename, "download.bin")
+      : sanitizeName(`${title}.${ext}`, "yt-dlp-download");
+    // The direct link comes from yt-dlp's extraction, so its own request
+    // headers (UA/Referer/…) are what the CDN expects; the task's headers
+    // fill the gaps and yt-dlp wins conflicts.
+    const headers = { ...(task.headers || {}), ...(info.httpHeaders || {}) };
+    const converted = {
+      ...task,
+      url: picked.url,
+      filename,
+      headers,
+      meta: {
+        ...(task.meta || {}),
+        ytdlpResolved: true,
+        ytdlp: {
+          title: info.title || null,
+          extractor: info.extractor || null,
+          duration: info.duration ?? null,
+          picked: {
+            formatId: picked.formatId, ext: picked.ext, height: picked.height,
+            vcodec: picked.vcodec, acodec: picked.acodec, protocol: picked.protocol,
+            note: picked.note,
+          },
+          formats: ytdlp.topFormats(info, 5),
+        },
+      },
+    };
+    return { ok: true, bin, info, picked, task: converted };
+  }
+
+  /**
+   * The resolve→direct-link→(failure→)delegate chain, shared by both arms.
+   * The direct download runs through the EXISTING http engine (runHttp), so
+   * probe, collision policy, segmented/streaming transfer and retries all
+   * apply to the direct link like to any plain URL.
+   */
+  async #ytdlpRunConverted(originalTask, converted, controller, progressCb) {
+    try {
+      const result = await this.runHttp(converted.task, controller, progressCb);
+      // The resolver's metadata rides the RESULT (the engine result carries
+      // none of its own), so api.mjs's completion merge
+      // ({...task.meta, ...result.meta}) lands it on the task record — the
+      // GUI reads the formats/picked note from there.
+      return {
+        ...result,
+        meta: { ...(result.meta || {}), ytdlpResolved: true, ytdlp: converted.task.meta.ytdlp },
+      };
+    } catch (directErr) {
+      // A user abort is not a failure to fall back from.
+      if (controller.signal.aborted) throw directErr;
+      // 直链下载阶段失败(能走到这里即重试已耗尽——探测与引擎各有自己的重试
+      // 预算)→ 全程委托兜底,最多一次:ytdlpDelegated 之后没有任何再入点。
+      const delegated = {
+        ...converted.task,
+        url: originalTask.url,          // back to the page: yt-dlp extracts AND downloads
+        headers: originalTask.headers,  // yt-dlp speaks for itself
+        meta: { ...(converted.task.meta || {}), ytdlpResolved: false, ytdlpDelegated: true },
+      };
+      const { runYtDlp } = await import("./ytdlp.mjs");
+      try {
+        const result = await runYtDlp({
+          downloader: this,
+          task: delegated,
+          controller,
+          progressCb,
+          resolveInfo: {
+            bin: converted.bin,
+            info: converted.info,
+            picked: converted.picked,
+            directError: String(directErr?.message || directErr),
+          },
+        });
+        this.emit("log", {
+          taskId: originalTask.id,
+          message: "yt-dlp 全程委托完成(此前直链下载失败:" +
+            String(directErr?.message || directErr).slice(0, 200) + ")",
+        });
+        return result;
+      } catch (delegateErr) {
+        if (controller.signal.aborted) throw delegateErr;
+        // Both reasons survive: why the direct link gave up, why the
+        // delegate did too.
+        delegateErr.message = "yt-dlp 全程委托失败：" + delegateErr.message +
+          "(此前直链下载失败：" + String(directErr?.message || directErr).slice(0, 300) + ")";
+        throw delegateErr;
+      }
+    }
+  }
+
+  /** Arm ②: the probe itself failed — resolve, or rethrow annotated. */
+  async #ytdlpProbeFailure(task, probeErr, controller, progressCb) {
+    if (controller.signal.aborted || !this.#ytdlpMayFallback(task)) throw probeErr;
+    const converted = await this.#ytdlpConvert(task, controller, "直链探测失败");
+    if (converted.ok) {
+      return await this.#ytdlpRunConverted(task, converted, controller, progressCb);
+    }
+    // 任务按原失败路径走,错误文案带安装指引(ytdlp 缺失)或 resolve 的具体
+    // 原因(ytdlp 可用)。The annotation survives for status errors (an
+    // HttpStatusError carries no code, so translateTaskError keeps the
+    // message); errno-shaped failures yield to the P-9 translation instead.
+    if (probeErr && typeof probeErr === "object") {
+      probeErr.message += converted.available
+        ? ";yt-dlp 解析失败:" + converted.reason
+        : ";" + converted.reason;
+    }
+    throw probeErr;
+  }
+
+  async runHttp(task, controller, progressCb) {
+    // ===== 批-8 smart-fallback 触发点(两臂,见上方区块说明) =====
+    let info;
+    try {
+      info = await probe(task.url, {
+        headers: task.headers, proxy: task.proxy,
+        insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
+        // Transient failures at probe time must not fail the whole task.
+        maxRetries: this.config.get("maxRetries"),
+        retryBaseMs: this.config.get("retryBaseMs"),
+      });
+    } catch (probeErr) {
+      // Arm ②: probe failed.
+      throw await this.#ytdlpProbeFailure(task, probeErr, controller, progressCb);
+    }
+    // Arm ①: the URL served a web page, not a file.
+    if (this.#ytdlpMayFallback(task) &&
+        /text\/html|application\/xhtml/i.test(String(info.contentType || ""))) {
+      const converted = await this.#ytdlpConvert(task, controller, "网页");
+      if (converted.ok) {
+        return await this.#ytdlpRunConverted(task, converted, controller, progressCb);
+      }
+      // resolve 失败:按原路径继续(页面本身仍可下载,历史行为不变),原因落
+      // 日志;meta 对象与调用方共享引用时一并带上,供任务记录展示。
+      this.emit("log", {
+        taskId: task.id,
+        message: "yt-dlp 解析失败(" + converted.reason + "),按原路径继续",
+      });
+      if (task.meta && typeof task.meta === "object") task.meta.ytdlpResolveError = converted.reason;
+    }
     // Reserve the output inside one protected step: the collision policy runs
     // under the lock, so the path written is the path held. Transfer state
     // lives beside the file, so two transfers aiming at the same path would
