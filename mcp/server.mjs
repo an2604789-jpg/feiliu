@@ -42,8 +42,10 @@ const MAX_WAIT_MS = 600000;
 
 const TERMINAL = new Set(["complete", "error"]);
 
-/** Schemes a download may use. file: and data: are refused explicitly. */
-const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:"]);
+/** Schemes a download may use. file: and data: are refused explicitly.
+ *  magnet: is allowed and delegates to the aria2c BT path (downloader
+ *  detectKind routes magnet:?xt= to kind "bt"). */
+const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "magnet:"]);
 
 function readVersion() {
   try {
