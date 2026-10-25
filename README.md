@@ -58,6 +58,41 @@ DOWNLOADX_HOME=~/dx-data node bin/downloadx.mjs daemon
 
 远程:daemon 开启 remoteAccess 后,`POST http://<host>:<port>/mcp`(Bearer token)。
 
+## HTTP API 响应形状
+
+所有 `/api/*` 请求都要求令牌:请求头 `x-downloadx-token: <token>`(或 `?token=`),值见数据根下 `runtime.json`。错误一律返回 `{"error":"..."}` 加对应 HTTP 状态码(401 令牌无效、400 缺参数、404 任务不存在、405 方法/动作不支持、409 冲突;个别响应会附加定位字段,如重复添加任务时 409 附带 `existingTaskId`)。本节仅文档化现状,不改任何返回形状。
+
+**任务类端点**返回包裹对象 `{"task":{...}}`:
+
+| 端点 | 成功响应 |
+| --- | --- |
+| `POST /api/tasks` | `201 {"task":{...}}`;askBeforeAdd 开启时的扩展来源任务返回 `202 {"pending":{...},"duplicate":bool}`(暂不入队,等待审批) |
+| `GET /api/tasks` | `200 {"tasks":[...]}` |
+| `GET /api/tasks/:id` | `200 {"task":{...}}` |
+| `PATCH /api/tasks/:id` | `200 {"task":{...}}` |
+| `POST /api/tasks/:id/start\|pause\|resume\|retry\|move` | `200 {"task":{...}}` |
+| `DELETE /api/tasks/:id`(可加 `?deleteFile=1` 连文件一起删) | `200 {"ok":true}` |
+
+**取消** `POST /api/tasks/:id/cancel` 返回扁平对象(与其余任务端点的 `{"task":...}` 包裹不同),取消后任务从队列移除:
+
+```json
+{
+  "ok": true,
+  "cancelled": true,
+  "removed": true,
+  "id": "t-123",
+  "target": "D:/videos/movie.mp4",
+  "kind": "http",
+  "discarded": ["D:/videos/movie.mp4.downloadx", "D:/videos/movie.mp4.downloadx-part"]
+}
+```
+
+- `target` 是传输实际使用的输出路径(含重名自动改名后的路径);`kind` 是传输实际运行的协议(`http`/`hls`/`dash`/`ftp`)。
+- `discarded` 列出**本次取消真正删除的中间产物**:分段日志(`*.downloadx`)、暂存装配文件(`*.downloadx-part`)、媒体分片目录(`*.parts`)等。只有取消前确实存在、取消后已被删除的路径才会列入;最终成品文件永远不会被 cancel 删除,也永远不会出现在 `discarded` 中。客户端可用它向用户证明删掉了什么。
+- 对已完成任务的 cancel 返回 `409`,响应 `{"ok":false,"cancelled":false,"removed":false,"id":...,"status":"complete","error":"task is already complete; cancel does not delete a finished file"}`,文件保留;对不存在的任务返回 `404 {"error":"no such task"}`,与其他任务端点一致。
+
+其余端点(status、queue、config、probe、grab、sniff 等)的返回形状以 `src/api.mjs` 为准。
+
 ---
 
 ## English
@@ -68,7 +103,7 @@ DOWNLOADX_HOME=~/dx-data node bin/downloadx.mjs daemon
 git clone https://github.com/an2604789-jpg/feiliu.git && cd feiliu
 node bin/downloadx.mjs daemon        # start the daemon
 node bin/downloadx.mjs open          # open the web GUI
-node test/run.mjs                    # 293 self-tests + 24 regression suites
+node test/run.mjs                    # 293 self-tests + 27 regression suites
 ```
 
 Requires Node.js >= 20. Optional: ffmpeg (media mux/transcode), aria2c (magnets). MIT licensed.

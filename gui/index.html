@@ -480,7 +480,7 @@
               <div class="field"></div>
               <div class="switch">
                 <label class="track"><input type="checkbox" id="cfg-categorizeByType"><span class="track"></span></label>
-                <div class="stext"><b>按文件类型自动分类到子文件夹</b><div class="ssub">例如视频进入 视频/、压缩包进入 压缩包/ 等</div></div>
+                <div class="stext"><b>按文件类型自动分类到子文件夹</b><div class="ssub">未指定保存目录时的默认行为：按扩展名归类（如视频进入 视频/、压缩包进入 压缩包/）。手动指定的目录原样落盘，不再追加分类子文件夹</div></div>
               </div>
             </div>
           </div>
@@ -922,17 +922,32 @@ function linkedDirFor(key, defaultDir){
   return key ? joinDir(defaultDir, key) : "";
 }
 /**
- * 提交 POST /api/tasks 时 dir 应该发什么。
- * 引擎侧（src/categories.mjs resolveDirectory）在 categorizeByType 开启时会自己
- * join(base, category)：把界面上展示的 defaultDir/分类 原样发过去会双重嵌套成
- * defaultDir/video/video，所以那条“联动出来的路径”要剥掉分类段只发 base；
- * categorizeByType 关闭时引擎忽略 category 的落盘作用，此时展示的路径原样发。
+ * 【批-5/P-6 前的旧剥离语义，现网提交链路已不再调用】
+ * 引擎侧（src/categories.mjs resolveDirectory）曾会在 categorizeByType 开启时
+ * 对显式 dir 也 join(base, category)，所以联动路径要剥掉分类段只发 base。
+ * P-6 之后显式 dir 即权威落点，引擎不再拼分类；活跃提交链路改用
+ * submitDirFor()。本函数原样保留仅因 test/batch1-gui.mjs（批-1 门禁，不在
+ * 批-5 可改清单内）钉住了这份旧契约——请勿在新代码中调用。
  */
 function categorySubmitDir(shownDir, key, categorizeByType, defaultDir){
   if (!key) return shownDir;
   const linked = linkedDirFor(key, defaultDir);
   if (categorizeByType && linked && normPath(shownDir) === normPath(linked)) return defaultDir;
   return shownDir;
+}
+/**
+ * 提交 POST /api/tasks 时 dir 应该发什么（批-5/P-6 反向联动）。
+ * 显式 dir 即权威落点：引擎不再替前端拼分类，选中分类时由前端把分类直接
+ * 算进最终 dir（defaultDir/<分类>）——
+ *   - 界面展示了路径 → 原样提交（含联动出来的 defaultDir/<分类>）；
+ *   - 目录留空但手选了分类 → 补齐 defaultDir/<分类> 再提交；
+ *   - 目录留空且未选分类 → 返回空（不发 dir），留给引擎在“未指定目录”
+ *     时按 categorizeByType 自动归类（设置页开关的新语义）。
+ */
+function submitDirFor(shownDir, key, defaultDir){
+  const shown = normPath(shownDir);
+  if (shown) return String(shownDir).trim();   // 原样（仅去首尾空白）——显式 dir 权威
+  return key ? linkedDirFor(key, defaultDir) : "";
 }
 /** URL/文件名 → 分类 key（跟随 daemon 下发的 categories 扩展名表）。 */
 function pickCategory(nameOrUrl, catMap){
@@ -2240,7 +2255,9 @@ document.getElementById("ap-approve").onclick = async ()=>{
   const body = {};
   if (name) body.filename = name;
   if (cat) body.category = cat;
-  const effDir = categorySubmitDir(shownDir, cat, (state.config && state.config.categorizeByType !== false), cfg.defaultDir || "");
+  // 批-5/P-6 反向联动：显式 dir 即权威落点，分类由前端直接算进最终 dir
+  // （defaultDir/<分类>），不再依赖 daemon 拼接。
+  const effDir = submitDirFor(shownDir, cat, cfg.defaultDir || "");
   if (effDir) body.dir = effDir;
   const btn = document.getElementById("ap-approve");
   btn.disabled = true;
@@ -2446,10 +2463,12 @@ document.getElementById("m-btnOk").onclick=async()=>{
   const cookies = document.getElementById("m-cookies").value.trim();
   const user = document.getElementById("m-user").value.trim();
   const pass = document.getElementById("m-pass").value;
-  // 分类联动：categorizeByType 开启时引擎自己会 join(base, category)，
-  // 联动出来的 defaultDir/分类 要剥回 defaultDir，避免 defaultDir/video/video
+  // 分类联动（批-5/P-6 反向）：显式 dir 即权威落点，引擎不再替前端拼分类——
+  // 选中分类时由前端把分类直接算进最终 dir（defaultDir/<分类>），界面展示的
+  // 路径原样提交；目录留空且未选分类时不发 dir，交给引擎按 categorizeByType
+  // 在默认目录里自动归类（设置页开关的新语义）。
   const cfg = state.config || {};
-  const effDir = categorySubmitDir(shownDir, catKey, (state.config && state.config.categorizeByType !== false), cfg.defaultDir || "");
+  const effDir = submitDirFor(shownDir, catKey, cfg.defaultDir || "");
   if (effDir) body.dir = effDir;
   if (catKey) body.category = catKey;
   if (name) body.filename = name;

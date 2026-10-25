@@ -108,13 +108,15 @@ if (guard) {
 // ---- 6) 接线：两个崩溃对话框都要拼上附注（源码级断言） -------------------
 
 test("uncaughtException dialog appends gppAdvisory (source-level)", async () => {
-  const re = /dialog\.showErrorBox\(\s*"DownloadX 未捕获异常"[\s\S]{0,400}?gppAdvisory\(/;
+  // 2026-10-25 起展示层更名为"飞流下载器"(desktop/main.mjs 对话框标题随更名)，
+  // 断言随标题更新；gppAdvisory 必须仍在 showErrorBox 调用体内。
+  const re = /dialog\.showErrorBox\(\s*"飞流下载器 未捕获异常"[\s\S]{0,400}?gppAdvisory\(/;
   assert.ok(re.test(MAIN_SRC),
     "uncaughtException 的 showErrorBox 调用体内未见 gppAdvisory(...)");
 });
 
 test("render-process-gone dialog appends gppAdvisory (source-level)", async () => {
-  const re = /dialog\.showErrorBox\(\s*\n?\s*"DownloadX 渲染进程异常"[\s\S]{0,600}?gppAdvisory\(/;
+  const re = /dialog\.showErrorBox\(\s*\n?\s*"飞流下载器 渲染进程异常"[\s\S]{0,600}?gppAdvisory\(/;
   assert.ok(re.test(MAIN_SRC),
     "render-process-gone 的 showErrorBox 调用体内未见 gppAdvisory(...)");
 });

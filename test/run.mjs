@@ -82,6 +82,18 @@ const BATCH4_SUITES = [
   "sites/public-sites.mjs",
 ];
 
+// Batch-5 (2026-10-25): the two landmark contracts from the Linux field
+// report (P-6 explicit-dir landing + GUI reverse linkage, P-7 byte-based
+// media progress), error transparency (P-8 attempts/retries, P-9 errno
+// translation, P-10 aria2c tails) and the CLI/docs pair (P-11 doctor data
+// root, P-12 README API shapes). Same self-contained contract as the lists
+// above: own runner, own throwaway DOWNLOADX_HOME, clean exit.
+const BATCH5_SUITES = [
+  "batch5-landmark.mjs",
+  "batch5-errortrans.mjs",
+  "batch5-doctor.mjs",
+];
+
 /** Run one regression suite file as a child process; resolve its exit code. */
 function runRegressionSuite(label, file) {
   return new Promise((resolve) => {
@@ -107,6 +119,7 @@ async function runBatch1() {
     ["Batch-2 regression", BATCH2_SUITES],
     ["Batch-3 regression", BATCH3_SUITES],
     ["Batch-4 regression", BATCH4_SUITES],
+    ["Batch-5 regression", BATCH5_SUITES],
   ];
   for (const [label, files] of groups) {
     for (const file of files) {
@@ -115,7 +128,7 @@ async function runBatch1() {
     }
     total += files.length;
   }
-  process.stdout.write(NL + "  batch1+batch2+batch3+batch4 suites: " + (total - failed) +
+  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5 suites: " + (total - failed) +
     " passed, " + failed + " failed" + NL);
   return failed === 0 ? 0 : 1;
 }

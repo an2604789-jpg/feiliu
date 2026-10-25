@@ -20,7 +20,7 @@ import { parseFtpUrl, FtpControl } from "./ftp.mjs";
 import { resolvePlaylist } from "./hls.mjs";
 import { parseMpd, selectTracks, listSegments, expandTemplate } from "./dash.mjs";
 import { mergeTracks } from "./merge.mjs";
-import { requestFollow, readBody, readBodyToFile, buildRequestHeaders, abortError } from "./net.mjs";
+import { requestFollow, readBody, readBodyToFile, buildRequestHeaders, abortError, translateTaskError } from "./net.mjs";
 import { RateLimiter, ChainLimiter } from "./rate.mjs";
 import { SUBDIR as StoreSubdir, STAGING_SUFFIX as StoreStagingSuffix, TransferStore } from "./store.mjs";
 import { filenameFromUrl, sanitizeName, formatBytes, ensureExtension, mkdirWithRetry } from "./util.mjs";
@@ -252,7 +252,10 @@ async function discardPartialPart(partPath) {
  */
 async function fetchMediaPartToFile(url, partPath, { headers, proxy, insecure, signal, limiter, maxRetries = 4, retryBaseMs = 500 } = {}) {
   let lastErr;
+  let attempts = 0;
+  let backoffMs = 0;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    attempts++;
     if (signal?.aborted) throw abortError();
     try {
       const res = await requestFollow(url, {
@@ -277,8 +280,17 @@ async function fetchMediaPartToFile(url, partPath, { headers, proxy, insecure, s
       }
       if (!retryable || attempt === maxRetries) break;
       const wait = Math.min(8000, (err && err.retryAfterMs) || retryBaseMs * Math.pow(2, attempt));
+      backoffMs += wait;
       await new Promise((r) => setTimeout(r, wait));
     }
+  }
+  // P-8: a fragment that burned its whole retry budget must not fail the
+  // task as if it had been tried once. Same annotation contract as
+  // probeWithRetry: the downloader's final-error layer turns these into the
+  // "after N attempts" message and the task's retries count.
+  if (lastErr && typeof lastErr === "object" && !signal?.aborted) {
+    lastErr.attempts = attempts;
+    lastErr.backoffMs = backoffMs;
   }
   throw lastErr;
 }
@@ -454,6 +466,16 @@ export class Downloader extends EventEmitter {
      * test-and-claim, never the transfer itself.
      */
     this.claimMutexTail = Promise.resolve();
+    /**
+     * Retry events observed during each task's CURRENT run (P-8): the
+     * segmented engine emits one per segment re-attempt, and the final task
+     * error / the task's `retries` field must be able to state how much
+     * retrying actually happened (the field report measured a task that
+     * retried six times and still reported retries=0). Set when a run starts,
+     * counted in #segmentEngine, read by #finalTaskError / the success path,
+     * deleted when the run settles. Never persisted.
+     */
+    this.runRetryCounts = new Map();
   }
 
   /** Run `fn` with the claim registry held; always released. */
@@ -1048,6 +1070,12 @@ export class Downloader extends EventEmitter {
     // the GUI silently had no effect on downloads.
     if (!prepared.proxy) prepared.proxy = this.config.get("proxy") || undefined;
 
+    // P-8: this run's retry tally starts at zero. Segment engines wired by
+    // #segmentEngine count their "retry" events into it, and #finalTaskError
+    // (or the success path below) turns it into task.retries and the
+    // "after N attempts" message.
+    this.runRetryCounts.set(task.id, 0);
+
     try {
       const kind = prepared.kind && prepared.kind !== "http" ? prepared.kind : await detectKind(prepared.url);
       // Record the protocol actually in use on the task itself. A task added
@@ -1057,16 +1085,17 @@ export class Downloader extends EventEmitter {
       // carries the same value.
       task.kind = kind;
       prepared.kind = kind;
-      if (kind === "ftp") return await this.runFtp(prepared, controller, progressCb);
-      if (kind === "hls") return await this.runHls(prepared, controller, progressCb);
-      if (kind === "dash") return await this.runDash(prepared, controller, progressCb);
+      let result;
+      if (kind === "ftp") result = await this.runFtp(prepared, controller, progressCb);
+      else if (kind === "hls") result = await this.runHls(prepared, controller, progressCb);
+      else if (kind === "dash") result = await this.runDash(prepared, controller, progressCb);
       // BT is delegated to the external aria2c engine (loaded dynamically so
       // this module's static surface is untouched); a missing aria2c fails
       // the task there with the human-readable P-3 message, never an empty
       // error.
-      if (kind === "bt") {
+      else if (kind === "bt") {
         const { runBt } = await import("./bt.mjs");
-        return await runBt({ downloader: this, task: prepared, controller, progressCb });
+        result = await runBt({ downloader: this, task: prepared, controller, progressCb });
       }
       // Format conversion is delegated the same way, to the preset-only
       // ffmpeg wrapper (src/convert.mjs). The task carries its whole intent
@@ -1074,15 +1103,89 @@ export class Downloader extends EventEmitter {
       // the configuration), so nothing here inspects ffmpeg or its arguments.
       // Progress/cancel/retry ride the same controller/progressCb lifecycle
       // every other strategy uses, and the source file is never touched.
-      if (kind === "convert") {
+      else if (kind === "convert") {
         const { runConvert } = await import("./convert.mjs");
-        return await runConvert({ downloader: this, task: prepared, controller, progressCb });
+        result = await runConvert({ downloader: this, task: prepared, controller, progressCb });
+      } else result = await this.runHttp(prepared, controller, progressCb);
+      // Retries that still ended in SUCCESS belong on the task record too
+      // (P-8): a probe that needed three rounds, or a transfer whose segments
+      // were re-fetched, is visible work, not a silent hiccup.
+      const tallied = this.runRetryCounts.get(task.id) ?? 0;
+      const probeRetries = Math.max(0, (Number(result?.probeAttempts) || 1) - 1);
+      if (tallied + probeRetries > 0) {
+        task.retries = (Number(task.retries) || 0) + tallied + probeRetries;
       }
-      return await this.runHttp(prepared, controller, progressCb);
+      return result;
+    } catch (err) {
+      // P-8/P-9: the last thing a strategy throws becomes the task's final
+      // error here — translated by underlying code, attempt-qualified, with
+      // the retries counted onto the task. See #finalTaskError.
+      throw this.#finalTaskError(task, err, { url: prepared.url });
     } finally {
       if (unlinkExternal) unlinkExternal();
       this.active.delete(task.id);
+      this.runRetryCounts.delete(task.id);
     }
+  }
+
+  /**
+   * The task's FINAL error: translated, attempt-qualified and counted
+   * (P-8/P-9).
+   *
+   * This is the single place a strategy's failure becomes what api.mjs writes
+   * into task.error. Rules:
+   *
+   *   * an aborted transfer is a user action, not a diagnosis — its identity
+   *     (message "aborted" / code ABORT_ERR) is preserved unchanged, because
+   *     api.mjs decides pause-vs-error from the message;
+   *   * the underlying errno is translated per P-9 by translateTaskError
+   *     (net.mjs): 域名解析失败 / 连接被拒绝 / 连接超时或被重置 name the
+   *     failing host:port, the proxy CONNECT family keeps its own wording,
+   *     unknown codes keep their text with the target host appended;
+   *   * failures that exhausted real attempts (the probe loop's budget, a
+   *     media fragment's retries, engine segment retries) say so —
+   *     "after N attempts(退避合计 Xs): <底层原因>" — and the retries land on
+   *     task.retries, which until this change stayed 0 for every failure
+   *     (the field report's complaint);
+   *   * a BT delegate's console tails (P-10) ride the error as .btTail and
+   *     are merged into task.meta.tail HERE, where the original task object
+   *     (not the strategy's `prepared` copy) is in reach, so a failed or
+   *     cancelled BT task shows what aria2c actually said.
+   *
+   * The error object is mutated and rethrown, never wrapped, so code, name
+   * and statusCode keep their meaning to every upstream consumer.
+   */
+  #finalTaskError(task, err, { url } = {}) {
+    if (!err || typeof err !== "object") return err;
+    if (err.btTail) {
+      task.meta = { ...(task.meta || {}), tail: err.btTail };
+    }
+    const message = String(err.message || "");
+    const aborted = err.code === "ABORT_ERR" || err.name === "AbortError" || /abort/i.test(message);
+    if (aborted) return err;
+    const segmentRetries = this.runRetryCounts.get(task.id) ?? 0;
+    const errAttempts = Math.max(1, Number(err.attempts) || 1);
+    const retriesObserved = (errAttempts - 1) + segmentRetries;
+    if (retriesObserved > 0) {
+      task.retries = (Number(task.retries) || 0) + retriesObserved;
+    }
+    const translated = translateTaskError(err, { url });
+    if (translated !== null) err.message = translated;
+    // The attempt prefix is only honest where attempts were really made
+    // against THIS failure: the probe/media loops that exhausted their own
+    // budget (err.attempts), or a network-flavoured error after the engine
+    // had already been retrying segments. A definitive first-shot answer
+    // (a 404, a taken output path) gets no "after 1 attempt" noise.
+    const prefixAttempts = err.attempts !== undefined
+      ? errAttempts
+      : (translated !== null && segmentRetries > 0 ? segmentRetries + 1 : 1);
+    if (prefixAttempts > 1) {
+      const backoff = Number(err.backoffMs) > 0
+        ? "(退避合计 " + (Number(err.backoffMs) / 1000).toFixed(1) + "s)"
+        : "";
+      err.message = "after " + prefixAttempts + " attempts" + backoff + ": " + err.message;
+    }
+    return err;
   }
 
   // ------------------------------------------------------------------ HTTP
@@ -1112,7 +1215,11 @@ export class Downloader extends EventEmitter {
     const releaseTarget = reserved.release;
     try {
       this.emit("resolved", { taskId: task.id, target, filename, dir, category, totalBytes: info.totalBytes });
-      return await this.#transferToTarget({ task, info, target, filename, dir, category, controller, progressCb });
+      const result = await this.#transferToTarget({ task, info, target, filename, dir, category, controller, progressCb });
+      // P-8: how many rounds the probe actually needed rides the result, so
+      // run() can put the retries on task.retries even when the transfer
+      // then succeeds. Absent when the probe answered on its first round.
+      return info.attempts ? { ...result, probeAttempts: info.attempts } : result;
     } finally {
       releaseTarget();
     }
@@ -1253,7 +1360,15 @@ export class Downloader extends EventEmitter {
       signal: controller.signal,
     });
     engine.on("progress", progressCb);
-    engine.on("retry", (r) => this.emit("retry", { taskId: task.id, ...r }));
+    engine.on("retry", (r) => {
+      // P-8: every segment re-attempt is counted for this run, so the task's
+      // final error and its `retries` field can state how much retrying the
+      // engine actually did (the events already flow to the daemon log and
+      // SSE; this makes them part of the task record too).
+      const n = this.runRetryCounts.get(task.id);
+      if (n !== undefined) this.runRetryCounts.set(task.id, n + 1);
+      this.emit("retry", { taskId: task.id, ...r });
+    });
     engine.on("downgrade", (m) => this.emit("downgrade", { taskId: task.id, message: m }));
     engine.on("log", (m) => this.emit("log", { taskId: task.id, message: m }));
     return engine;
@@ -1414,8 +1529,17 @@ export class Downloader extends EventEmitter {
     const segments = playlist.segments;
     // Fragments are independent: use the segmented engine on each, but with
     // modest concurrency to stay polite to the CDN.
+    // 批-5/P-7：进度按**字节**口径报告——segBytes 累计已写分片字节（含独立
+    // 音轨阶段），分片数另以 segmentsDone/segmentsTotal 暴露；不再把
+    // segments.length 塞进 totalBytes（实测 64=分片数曾被当成字节数展示）。
+    let segBytes = 0;
     let completed = 0;
     let firstMapWritten = false;
+    const reportProgress = () => progressCb({
+      totalBytes: null, lengthKnown: false, percent: null, speed: 0,
+      bytesWritten: segBytes,
+      segmentsDone: completed, segmentsTotal: segments.length,
+    });
 
     const downloadOne = async (seg, index) => {
       const partPath = path.join(partDir, `${String(index).padStart(6, "0")}.part`);
@@ -1424,13 +1548,18 @@ export class Downloader extends EventEmitter {
       // crash had truncated for a finished fragment and stitched short bytes
       // into the product. Anything unmarked is discarded and fetched again,
       // so a resumed transfer produces exactly the bytes a one-shot run would.
-      if (await partIsComplete(partPath)) { completed++; return partPath; }
+      if (await partIsComplete(partPath)) {
+        completed++;
+        segBytes += (await fsp.stat(partPath)).size;
+        reportProgress();
+        return partPath;
+      }
       await discardPartialPart(partPath);
 
       // Retry per segment: a dropped connection on one fragment must not
       // discard the whole playlist download. The body streams straight into
       // the .part file, so fragment size costs nothing in memory.
-      await fetchMediaPartToFile(seg.uri, partPath, {
+      const written = await fetchMediaPartToFile(seg.uri, partPath, {
         headers: task.headers,
         proxy: task.proxy ?? undefined,
         insecure: task.insecure ?? this.config.get("insecure"),
@@ -1440,10 +1569,8 @@ export class Downloader extends EventEmitter {
         retryBaseMs: this.retryBaseMs,
       });
       completed++;
-      progressCb({
-        totalBytes: segments.length, bytesWritten: completed,
-        percent: (completed / segments.length) * 100, speed: 0,
-      });
+      segBytes += written;
+      reportProgress();
       return partPath;
     };
 
@@ -1506,6 +1633,7 @@ export class Downloader extends EventEmitter {
           const audioParts = target + ".audioparts";
           await mkdirWithRetry(audioParts);
           let done = 0;
+          const audioTotal = audioRes.playlist.segments.length;
           const aq = audioRes.playlist.segments.map((s, i) => ({ s, i }));
           const aw = async () => {
             for (;;) {
@@ -1514,12 +1642,22 @@ export class Downloader extends EventEmitter {
               if (!job) return;
               const p = path.join(audioParts, String(job.i).padStart(6, "0") + ".part");
               // Same completion rule as the video parts: marker AND length.
-              if (await partIsComplete(p)) { done++; continue; }
+              if (await partIsComplete(p)) {
+                done++;
+                segBytes += (await fsp.stat(p)).size;
+                progressCb({
+                  totalBytes: null, lengthKnown: false, percent: null, speed: 0,
+                  bytesWritten: segBytes,
+                  segmentsDone: done, segmentsTotal: audioTotal,
+                });
+                continue;
+              }
               await discardPartialPart(p);
               // An audio rendition is more bytes of the same task: same
               // bucket, streamed to disk like every other fragment — and now
               // retried too, where it used to be a single attempt per part.
-              await fetchMediaPartToFile(job.s.uri, p, {
+              // P-7：字节口径累计（含视频阶段已写分片），分片数另列字段。
+              const written = await fetchMediaPartToFile(job.s.uri, p, {
                 headers: task.headers,
                 proxy: task.proxy || this.config.get("proxy") || undefined,
                 insecure: task.insecure ?? this.config.get("insecure"),
@@ -1529,9 +1667,11 @@ export class Downloader extends EventEmitter {
                 retryBaseMs: this.retryBaseMs,
               });
               done++;
+              segBytes += written;
               progressCb({
-                totalBytes: audioRes.playlist.segments.length, bytesWritten: done,
-                percent: (done / audioRes.playlist.segments.length) * 100, speed: 0,
+                totalBytes: null, lengthKnown: false, percent: null, speed: 0,
+                bytesWritten: segBytes,
+                segmentsDone: done, segmentsTotal: audioTotal,
               });
             }
           };
@@ -1663,6 +1803,10 @@ export class Downloader extends EventEmitter {
       try { return new URL(u, task.url).toString(); } catch { return u; }
     };
     const concurrency = Math.max(1, Math.min(task.connections || this.config.get("maxConnections"), 16));
+    // 批-5/P-7：进度按字节口径报告——trackBytes 跨视频/音频轨累计已写分片
+    // 字节，分片数另以 segmentsDone/segmentsTotal 暴露；不再把分片数当
+    // totalBytes（P-7 实测 64=分片数被展示成字节数）。
+    let trackBytes = 0;
 
     /** Fetch every segment of one representation into a single file. */
     const fetchTrack = async (rep, label) => {
@@ -1674,6 +1818,11 @@ export class Downloader extends EventEmitter {
       await mkdirWithRetry(trackDir);
 
       let completed = 0;
+      const reportTrack = () => progressCb({
+        totalBytes: null, lengthKnown: false, percent: null, speed: 0,
+        bytesWritten: trackBytes,
+        segmentsDone: completed, segmentsTotal: segUrls.length,
+      });
       const queue = segUrls.map((u, i) => ({ u, i }));
       const worker = async () => {
         for (;;) {
@@ -1683,11 +1832,16 @@ export class Downloader extends EventEmitter {
           const partPath = path.join(trackDir, String(job.i).padStart(6, "0") + ".part");
           // Same completion rule as the HLS parts: marker AND length must
           // agree, otherwise the partial file is discarded and refetched.
-          if (await partIsComplete(partPath)) { completed++; continue; }
+          if (await partIsComplete(partPath)) {
+            completed++;
+            trackBytes += (await fsp.stat(partPath)).size;
+            reportTrack();
+            continue;
+          }
           await discardPartialPart(partPath);
-          await fetchMediaPartToFile(absolute(job.u), partPath, {
+          const written = await fetchMediaPartToFile(absolute(job.u), partPath, {
             headers: task.headers,
-            proxy: task.proxy || undefined,
+            proxy: task.proxy ?? undefined,
             insecure: task.insecure ?? this.config.get("insecure"),
             signal: controller.signal,
             limiter,
@@ -1695,10 +1849,8 @@ export class Downloader extends EventEmitter {
             retryBaseMs: this.retryBaseMs,
           });
           completed++;
-          progressCb({
-            totalBytes: segUrls.length, bytesWritten: completed,
-            percent: (completed / segUrls.length) * 100, speed: 0,
-          });
+          trackBytes += written;
+          reportTrack();
         }
       };
       await Promise.all(Array.from({ length: concurrency }, worker));

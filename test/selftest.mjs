@@ -177,9 +177,15 @@ const hashFile = async (p) => {
     assert.equal(cat.categorize("d.unknownext", DEFAULT_CONFIG.categories), null);
   });
   await suite.test("resolveDirectory honours categorizeByType", () => {
+    // 批-5/P-6 语义：显式 dir 即权威落点（原样返回，绝不追加分类子目录）；
+    // 分类只改变未指定目录（走 defaultDir）时的落点，且受 categorizeByType 控制。
     const config = { defaultDir: "D:/dl", categorizeByType: true, categories: DEFAULT_CONFIG.categories };
     assert.equal(cat.resolveDirectory({ filename: "a.mp4", config }).replace(/\\/g, "/"), "D:/dl/video");
-    assert.equal(cat.resolveDirectory({ filename: "a.mp4", dir: "E:/x", config }).replace(/\\/g, "/"), "E:/x/video");
+    assert.equal(cat.resolveDirectory({ filename: "a.mp4", dir: "E:/x", config }).replace(/\\/g, "/"), "E:/x");
+    assert.equal(cat.resolveDirectory({ filename: "a.mp4", dir: "E:/x", category: "audio", config }).replace(/\\/g, "/"), "E:/x",
+      "an explicit category must not add a subfolder to an explicit dir either");
+    assert.equal(cat.resolveDirectory({ filename: "a.mp4", dir: "", config }).replace(/\\/g, "/"), "D:/dl/video",
+      "an empty-string dir counts as unspecified");
     const flat = { defaultDir: "D:/dl", categorizeByType: false, categories: DEFAULT_CONFIG.categories };
     assert.equal(cat.resolveDirectory({ filename: "a.mp4", config: flat }).replace(/\\/g, "/"), "D:/dl");
   });
@@ -3073,9 +3079,10 @@ const hashFile = async (p) => {
       "get", origin.origin + "/hls/master.m3u8?count=2", "-o", mediaDir, "-q",
     ]);
     assert.equal(code, 0);
-    assert.match(await fsp.readFile(path.join(mediaDir, "video", "media720.ts"), "utf8").catch(() => ""),
+    // 批-5/P-6：-o <目录> 是显式目录，文件直接落在其中（不再追加 video/ 子目录）。
+    assert.match(await fsp.readFile(path.join(mediaDir, "media720.ts"), "utf8").catch(() => ""),
       /A/, "the auto-detected path must still fetch fragments");
-    const size = (await fsp.stat(path.join(mediaDir, "video", "media720.ts"))).size;
+    const size = (await fsp.stat(path.join(mediaDir, "media720.ts"))).size;
     assert.equal(size, 2 * 64 * 1024);
   });
 
@@ -3092,7 +3099,8 @@ const hashFile = async (p) => {
     assert.ok(!/^\s*done:/m.test(stdout), "no success summary may be printed, got " + JSON.stringify(stdout));
     assert.match(stderr, /merge/i, "the failure must say the merge did not happen");
     // Both track files exist, which is what the message promises.
-    const files = (await fsp.readdir(path.join(mediaDir, "video"))).sort();
+    // 批-5/P-6：-o <目录> 是显式目录，轨道文件直接落在其中（无 video/ 子目录）。
+    const files = (await fsp.readdir(mediaDir)).sort();
     assert.equal(files.length, 2, "both tracks must be kept, got " + JSON.stringify(files));
   });
 

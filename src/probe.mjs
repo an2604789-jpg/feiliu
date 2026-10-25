@@ -54,14 +54,41 @@ export async function probe(url, opts = {}) {
  *
  * Only retryable conditions are retried (408/429/5xx and network errors).
  * A 404 or 403 is a definitive answer and is returned immediately.
+ *
+ * P-8: the retry loop's work is visible after the fact. The cloud field
+ * report measured "~12s until error" and saw a task whose `retries` stayed 0
+ * and whose error named no attempt count — six probe attempts and their
+ * backoff had happened, and none of it showed. Now:
+ *
+ *   * a probe that EXHAUSTS its budget throws the last underlying error
+ *     annotated with `attempts` (rounds actually made), `attemptErrors` (one
+ *     line per failed round) and `backoffMs` (the total time spent waiting
+ *     between rounds), so the downloader can say "after N attempts" and
+ *     count the retries onto the task;
+ *   * a probe that SUCCEEDS after failures reports the same numbers on its
+ *     result object (only when more than one round was needed — a
+ *     first-try success keeps the exact shape it always had).
+ *
+ * The underlying error is rethrown as-is (never wrapped) so statusCode,
+ * code and name keep their meaning to every existing consumer.
  */
 async function probeWithRetry(url, opts) {
   const maxAttempts = Math.max(1, Number(opts.maxRetries ?? 4));
   const baseMs = Math.max(10, Number(opts.retryBaseMs ?? 300));
   let lastErr;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  let attempts = 0;
+  let backoffMs = 0;
+  const attemptErrors = [];
+  for (;;) {
+    attempts++;
     try {
-      return await probeOnce(url, opts);
+      const result = await probeOnce(url, opts);
+      if (attempts > 1) {
+        result.attempts = attempts;
+        result.attemptErrors = attemptErrors;
+        result.backoffMs = backoffMs;
+      }
+      return result;
     } catch (err) {
       lastErr = err;
       if (err?.name === "AbortError" || opts.signal?.aborted) throw err;
@@ -71,12 +98,26 @@ async function probeWithRetry(url, opts) {
         ? true
         : status === 408 || status === 429 || status >= 500;
       if (!retryable) throw err;
-      if (attempt === maxAttempts - 1) break;
-      const wait = err.retryAfterMs > 0 ? Math.min(30000, err.retryAfterMs) : baseMs * Math.pow(2, attempt);
-      await new Promise((r) => setTimeout(r, Math.min(wait, 5000)));
+      attemptErrors.push(attemptSummary(err));
+      if (attempts >= maxAttempts) break;
+      const wait = err.retryAfterMs > 0 ? Math.min(30000, err.retryAfterMs) : baseMs * Math.pow(2, attempts - 1);
+      const sleepMs = Math.min(wait, 5000);
+      backoffMs += sleepMs;
+      await new Promise((r) => setTimeout(r, sleepMs));
     }
   }
+  lastErr.attempts = attempts;
+  lastErr.backoffMs = backoffMs;
+  lastErr.attemptErrors = attemptErrors;
   throw lastErr;
+}
+
+/** One line per failed probe attempt, bounded so tails stay readable. */
+function attemptSummary(err) {
+  const line = err?.statusCode !== undefined
+    ? "HTTP " + err.statusCode
+    : String(err?.code || err?.message || err);
+  return line.slice(0, 120);
 }
 
 export function parseDigestHeaders(headers) {

@@ -29,11 +29,20 @@ export function categorize(nameOrUrl, categories = DEFAULT_CONFIG.categories) {
 
 /**
  * Resolve the directory a download should land in.
+ *
+ * 批-5 / P-6 语义：调用方显式给出 `dir` 时，dir 就是权威落点——一字不差地
+ * 落在那里，绝不追加分类子目录（API/agent 的 `dir+filename` 精确落点契约，
+ * 修复"文件落在 dir/archive/…"的劫持）。分类只改变**未指定目录**（走
+ * defaultDir）时的默认行为，且仍受 categorizeByType 开关控制。归类结果
+ * 照常由调用方记录进 task.category（见 Downloader.requestedBase）。
+ *
  * @param {{ filename:string, dir?:string, category?:string|null, config:any }} opts
  */
 export function resolveDirectory({ filename, dir, category, config }) {
   const base = dir || config?.defaultDir || process.cwd();
-  if (!config?.categorizeByType) return base;
+  // An explicit dir is the exact landing place: appending a category folder
+  // here is what broke the dir+filename contract (P-6).
+  if (dir || !config?.categorizeByType) return base;
   const cat = category ?? categorize(filename, config.categories);
   return cat ? path.join(base, cat) : base;
 }

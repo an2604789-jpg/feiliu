@@ -37,6 +37,95 @@ export class RangeNotSupportedError extends Error {
   }
 }
 
+/**
+ * Errno values the local disk side of this process can raise. The
+ * unknown-code arm of translateTaskError() must NOT append a network target
+ * to them: in "EPERM: operation not permitted, open 'C:\\...'" the failing
+ * link is the disk, and naming the download's host would point the user at
+ * the wrong layer entirely.
+ */
+const FILESYSTEM_ERRNOS = new Set([
+  "EACCES", "EPERM", "EBUSY", "ENOENT", "ENOTDIR", "ENOTEMPTY", "EISDIR",
+  "EEXIST", "ENOSPC", "EMFILE", "ENFILE", "ENAMETOOLONG", "EROFS", "EXDEV",
+]);
+
+/**
+ * The endpoint a failed request was talking to, from whichever layer still
+ * knows it (P-9).
+ *
+ * Node's own errors are preferred over the caller's URL: a DNS failure names
+ * the host it could not resolve (err.hostname), a refused connection carries
+ * address and port (err.port), and "connect ECONNREFUSED 127.0.0.1:9" spells
+ * the endpoint out in the message. The caller's URL is the last resort —
+ * after redirects it may no longer be the host that refused us, but it is
+ * still the host the user asked for.
+ */
+function errorHostPort(err, url) {
+  let host = String(err?.hostname || "");
+  let port = err?.port === undefined || err?.port === null ? "" : String(err.port);
+  if (!host || !port) {
+    const m = /connect [A-Z_]+ (\[[^\]]+\]|[^\s:]+):(\d+)/.exec(String(err?.message || ""));
+    if (m) {
+      if (!host) host = m[1];
+      if (!port) port = m[2];
+    }
+  }
+  if ((!host || !port) && url) {
+    try {
+      const u = new URL(url);
+      if (!host) host = u.hostname;
+      if (!port) port = u.port || (u.protocol === "https:" ? "443" : u.protocol === "http:" ? "80" : "");
+    } catch { /* the caller's context was not a URL */ }
+  }
+  return { host, port };
+}
+
+/**
+ * Translate a transport-level failure into the final, human-facing task
+ * error (P-9).
+ *
+ * The cloud field report (2026-10-25) showed every connection failure
+ * surfacing as an opaque English sentence that does not even exist in this
+ * repository. The download path's own errors are errno-coded, so the last
+ * thing a task throws can — and should — be normalized here:
+ *
+ *   ENOTFOUND / EAI_AGAIN -> "域名解析失败:<host>"
+ *   ECONNREFUSED          -> "连接被拒绝:<host>:<port>"
+ *   ETIMEDOUT / ECONNRESET-> "连接超时或被重置:<host>"
+ *   proxy CONNECT non-200 -> the existing "proxy CONNECT failed: HTTP <code>
+ *                            for <host>" family (kept, not re-worded)
+ *   any other errno-shaped code (EPIPE, EHOSTUNREACH, ERR_SSL_*,
+ *   undici's UND_ERR_*) -> original text, with the target host appended
+ *
+ * @returns {string|null} the translated message, or null when the error must
+ *          keep its message unchanged — a cancellation (api.mjs decides
+ *          pause-vs-error from the message), an application-semantic failure
+ *          (TARGET_BUSY, ALREADY_EXISTS already name their situation, and
+ *          their `code` is a contract, not an errno), or anything with no
+ *          underlying code and no host to name.
+ */
+export function translateTaskError(err, { url } = {}) {
+  if (!err || typeof err !== "object") return null;
+  if (err.name === "AbortError" || err.code === "ABORT_ERR") return null;
+  if (err.code === "TARGET_BUSY" || err.code === "ALREADY_EXISTS") return null;
+  const message = String(err.message || "");
+  const code = String(err.code || "");
+  // The proxy CONNECT family keeps its own wording (P-9 says keep it); if an
+  // older message lacks the host, append it rather than re-wording.
+  if (err.name === "ProxyConnectError" || /^proxy CONNECT failed: HTTP \d+/.test(message)) {
+    return message.includes(" for ") ? message : message + " for " + errorHostPort(err, url).host;
+  }
+  const { host, port } = errorHostPort(err, url);
+  if (!host) return null;          // nothing to anchor a translation to
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "域名解析失败:" + host;
+  if (code === "ECONNREFUSED") return "连接被拒绝:" + host + (port ? ":" + port : "");
+  if (code === "ETIMEDOUT" || code === "ECONNRESET") return "连接超时或被重置:" + host;
+  if (code && /^[A-Z][A-Z0-9_]*$/.test(code) && !FILESYSTEM_ERRNOS.has(code)) {
+    return message + "（目标 " + host + "）";
+  }
+  return null;
+}
+
 function proxyConnect(proxyUrl, host, port, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
     const p = new URL(proxyUrl);
@@ -54,7 +143,15 @@ function proxyConnect(proxyUrl, host, port, timeoutMs, signal) {
     req.once("connect", (res, socket) => {
       if (res.statusCode !== 200) {
         socket.destroy();
-        reject(new Error(`proxy CONNECT failed: HTTP ${res.statusCode}`));
+        // P-9: the tunnel target names the failure. "HTTP 403" alone says
+        // neither which origin was being reached nor that it was the proxy
+        // (not the origin) that refused — both facts are in the caller's
+        // hands right here. The error keeps its own message family; the
+        // translation layer (translateTaskError) recognizes it by name and
+        // passes it through untouched.
+        const err = new Error(`proxy CONNECT failed: HTTP ${res.statusCode} for ${host}`);
+        err.name = "ProxyConnectError";
+        reject(err);
         return;
       }
       socket.setNoDelay(true);

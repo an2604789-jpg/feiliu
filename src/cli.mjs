@@ -1197,6 +1197,7 @@ async function cmdDoctor() {
 
   const ok = (label, detail) => lines.push(["ok", label, detail]);
   const warn = (label, detail, fix) => lines.push(["warn", label, detail + (fix ? "  -> " + fix : "")]);
+  const info = (label, detail) => lines.push(["info", label, detail]);
   const bad = (label, detail, fix) => {
     problems++;
     lines.push(["FAIL", label, detail + (fix ? "  -> " + fix : "")]);
@@ -1218,6 +1219,22 @@ async function cmdDoctor() {
   } catch (err) {
     bad("runtime dir", paths.root + " is not writable: " + err.message,
       "check the folder permissions, or set DOWNLOADX_HOME to a writable path");
+  }
+
+  // ---- which data root is in effect (P-11) ------------------------------
+  // Every daemon answer below is only ever about THIS root: a daemon started
+  // with a different DOWNLOADX_HOME keeps its runtime.json (port + token) in
+  // that root, which a default-root run cannot see — the "daemon not running"
+  // false negative. Name the root in effect either way; the two roots share
+  // nothing (each has its own queue, config and runtime.json). Doctor never
+  // scans ports.
+  if (process.env.DOWNLOADX_HOME) {
+    ok("data root", paths.root + "  (from DOWNLOADX_HOME)");
+  } else {
+    info("data root", paths.root + "  (default; DOWNLOADX_HOME is not set)" +
+      "  -> if the daemon runs on a custom data root, set DOWNLOADX_HOME to that" +
+      " same path before running doctor (each root has its own queue, config" +
+      " and runtime.json)");
   }
 
   // ---- settings and download folder -----------------------------------
@@ -1267,6 +1284,16 @@ async function cmdDoctor() {
     if (stale) {
       bad("runtime file", paths.runtime + " exists but no live process answers",
         "delete it: it is left over from a crashed daemon and makes clients wait for it");
+    } else {
+      // P-11: this root has no runtime file, and a LISTENING port alone cannot
+      // be attributed to downloadx, so nothing is probed on the network — the
+      // human gets the commands that answer it instead.
+      info("port check", "no runtime file in this data root; a daemon on another root " +
+        "keeps its port + token in <that root>/runtime.json" +
+        "  -> check it with: DOWNLOADX_HOME=<that root> node bin/downloadx.mjs doctor," +
+        " or list listeners: " + (process.platform === "win32"
+          ? "netstat -ano | findstr LISTENING  (match the PID to node.exe)"
+          : "ss -ltnp  (match the pid to the node process)"));
     }
   }
 
@@ -1292,7 +1319,7 @@ async function cmdDoctor() {
   }
 
   // ---- output ---------------------------------------------------------
-  const label = { ok: "[ok] ", warn: "[--] ", FAIL: "[!!] " };
+  const label = { ok: "[ok] ", warn: "[--] ", FAIL: "[!!] ", info: "[i]  " };
   process.stdout.write("\n  downloadx doctor\n\n");
   for (const [kind, what, detail] of lines) {
     process.stdout.write("  " + (label[kind] || "") + " " + what.padEnd(16) + detail + "\n");

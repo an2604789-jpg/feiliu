@@ -23,6 +23,17 @@
 // natively from its control file. api.mjs's cancel (which discards the whole
 // <target>.downloadx journal family) is the only path that deletes it, and it
 // works unmodified because the staging directory lives inside that family.
+//
+// Network requirements (P-10): BT 需要 UDP/直连出口,代理环境可能无法工作 —
+// BitTorrent speaks UDP (DHT, trackers) and makes direct peer connections, so
+// an egress that only allows HTTP CONNECT (the common cloud-desktop setup this
+// was field-tested on) can only ever deliver zero bytes; that is an
+// environment limit, not a bug. The task/config proxy is still forwarded
+// explicitly as --all-proxy so aria2c can try, and the delegate's console
+// tails (stdout/stderr, 40 lines each) are attached to the failure/cancel as
+// err.btTail — merged into the task's error message and task.meta.tail by the
+// downloader — so "zero bytes behind a proxy" reads as a diagnosis instead of
+// a black box.
 
 import { spawn, execFile } from "node:child_process";
 import fs from "node:fs";
@@ -354,6 +365,10 @@ export async function runBt({ downloader, task, controller, progressCb }) {
       // after 100%. Zero seed time = the task completes when the file does.
       "--seed-time=0",
     ];
+    // P-10: forward the proxy explicitly (task value wins over Settings), so
+    // aria2c never silently follows an ambient env proxy instead of ours.
+    // See the module header: BT needs UDP/direct egress, so in an
+    // HTTP-CONNECT-only environment this is a courtesy, not a fix.
     const proxy = String(task.proxy || downloader.config.get("proxy") || "").trim();
     if (proxy) args.push("--all-proxy=" + proxy);
     args.push(task.url);
@@ -438,8 +453,23 @@ export async function runBt({ downloader, task, controller, progressCb }) {
         finish(e);
       });
       child.on("close", (code, signalName) => {
+        // P-10: the console tails (40 lines each, see keep()) ride every
+        // non-success exit as err.btTail. The downloader merges them into
+        // task.meta.tail; for failures the message below also carries the
+        // last few lines inline, so the error alone already says why.
+        const btTail = { stdout: [...stdoutTail], stderr: [...stderrTail] };
         if (signal.aborted) {
-          import("./net.mjs").then(({ abortError }) => finish(abortError())).catch(() => finish(new Error("aborted")));
+          import("./net.mjs")
+            .then(({ abortError }) => {
+              const e = abortError();
+              e.btTail = btTail;
+              finish(e);
+            })
+            .catch(() => {
+              const e = new Error("aborted");
+              e.btTail = btTail;
+              finish(e);
+            });
           return;
         }
         if (code === 0) {
@@ -447,10 +477,12 @@ export async function runBt({ downloader, task, controller, progressCb }) {
           return;
         }
         const tail = [...stdoutTail, ...stderrTail].slice(-15).join(" | ");
-        finish(new Error(
+        const err = new Error(
           "aria2c 委托失败（退出码 " + (code === null ? "signal " + signalName : code) + "）" +
           (tail ? "：" + tail : "：(无输出)")
-        ));
+        );
+        err.btTail = btTail;
+        finish(err);
       });
     });
 

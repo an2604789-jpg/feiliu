@@ -397,9 +397,10 @@ export async function runMediaE2ETests(suite, ctx) {
     }
   });
 
-  await suite.test("get -o <directory> keeps the category subfolder behaviour", async () => {
-    // The other half of the contract: a directory is still a directory, and the
-    // category setting still decides the subfolder.
+  await suite.test("get -o <directory> lands flat: the explicit dir is authoritative", async () => {
+    // 批-5/P-6 语义：显式目录即权威落点——文件直接落在其中，即使
+    // categorizeByType 开启也不追加分类子目录（旧行为会拼出 dir/video/）。
+    // 分类只作用于未指定目录（走 defaultDir）的任务，见 batch5-landmark。
     const origin = await startHlsOrigin({ segments: 2, segBytes: 32 * 1024 });
     const dir = path.join(workRoot, "dir-output");
     await fsp.mkdir(dir, { recursive: true });
@@ -409,9 +410,9 @@ export async function runMediaE2ETests(suite, ctx) {
         id: "dir-output", url: origin.url, kind: "hls", filename: "clip.ts", dir,
         headers: {}, connections: 2, meta: {},
       });
-      const expected = path.join(dir, "video", "clip.ts");
-      assert.equal(result.target, expected, "a directory target must still be classified, got " + result.target);
-      assert.ok(fs.existsSync(expected), "the categorised file must exist");
+      const expected = path.join(dir, "clip.ts");
+      assert.equal(result.target, expected, "a directory target must land exactly dir/filename, got " + result.target);
+      assert.ok(fs.existsSync(expected), "the file must exist at the explicit dir");
       assert.equal(await hashFile(expected), origin.expectedSha256);
     } finally {
       await origin.close();
@@ -456,8 +457,11 @@ export async function runMediaE2ETests(suite, ctx) {
         id: "agree-auto", url: origin.url, kind: detectKind(origin.url), filename: "same.ts", dir: dirB,
         headers: {}, connections: 2, meta: {},
       });
-      assert.equal(path.basename(path.dirname(forced.target)), path.basename(path.dirname(auto.target)),
-        "both must land in the same relative subfolder: " + forced.target + " vs " + auto.target);
+      // 批-5/P-6：两条路线的落点都是"显式目录/文件名"，不追加分类子目录。
+      assert.equal(path.dirname(forced.target), path.resolve(dirA),
+        "forced must land directly in its explicit dir: " + forced.target);
+      assert.equal(path.dirname(auto.target), path.resolve(dirB),
+        "auto-detected must land directly in its explicit dir: " + auto.target);
       assert.equal(await hashFile(forced.target), await hashFile(auto.target),
         "both routes must produce identical bytes");
     } finally {
@@ -514,15 +518,16 @@ export async function runMediaE2ETests(suite, ctx) {
         const written = (await walkFiles(homeDir)).filter((f) => path.basename(f) !== "config.json");
         assert.equal(written.length, 1, "nothing else may be written: " + JSON.stringify(written));
 
-        // With --filename the user named the file separately: directory rules apply.
+        // With --filename the user named the file separately: the explicit
+        // directory is the exact landing place (批-5/P-6 — no category subfolder).
         const named = path.join(homeDir, "named-dir");
         await fsp.mkdir(named, { recursive: true });
         const r2 = await withCapturedCli((cli) => cli.main([
           "get", origin.url, "--kind", "hls", "-o", named, "--filename", "chosen.ts", "-q",
         ]));
         assert.equal(r2.code, 0, "the named download must succeed: " + r2.stderr);
-        assert.ok(fs.existsSync(path.join(named, "video", "chosen.ts")),
-          "a directory plus --filename must keep the category behaviour, found " +
+        assert.ok(fs.existsSync(path.join(named, "chosen.ts")),
+          "a directory plus --filename must land exactly dir/filename, found " +
           JSON.stringify(await walkFiles(named)));
       });
     } finally {
