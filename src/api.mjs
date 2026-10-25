@@ -37,10 +37,25 @@ function tokenOk(expected, got) {
  */
 const LIVE_TASK_STATUSES = new Set(["queued", "connecting", "downloading", "paused"]);
 
-/** The live task for this URL, or null. */
-function liveTaskFor(queue, url) {
+/**
+ * In-flight dedup key: url + kind + convert preset (P-13).
+ *
+ * Batch-1 keyed duplicates on the URL alone, which was right while every task
+ * was a transfer of that URL. Batch-4 added converts, where the URL names the
+ * SOURCE file and the intent is really (url, preset): queuing one source for
+ * two different presets is a legitimate parallel job, not a duplicate, but the
+ * URL-only key 409'd it. Kind keeps download behaviour exactly as it was —
+ * same URL, same kind is still the same in-flight task and still 409s.
+ */
+function liveTaskKey(url, kind, meta) {
+  return url + "\u0000" + (kind || "http") + "\u0000" + String(meta?.preset || "");
+}
+
+/** The live task for this add (same url+kind+preset), or null. */
+function liveTaskFor(queue, url, kind, meta) {
+  const want = liveTaskKey(url, kind, meta);
   for (const t of queue.tasks.values()) {
-    if (t.url === url && LIVE_TASK_STATUSES.has(t.status)) return t;
+    if (liveTaskKey(t.url, t.kind, t.meta) === want && LIVE_TASK_STATUSES.has(t.status)) return t;
   }
   return null;
 }
@@ -477,9 +492,12 @@ export class ApiServer {
         // downloading or paused is refused with the existing task's id so the
         // client can point the user at it. Error and complete do not count —
         // re-adding a failed or finished URL is legitimate (and matches the
-        // extension host's own dedup). This is a semantic change from the old
-        // "always a second task" behaviour; see the API section in README.md.
-        const live = liveTaskFor(this.queue, url2);
+        // extension host's own dedup). P-13: the key is url+kind+preset, not
+        // the bare URL — the same source under a different convert preset is
+        // a different job, while same url+kind still 409s exactly as before.
+        // This is a semantic change from the old "always a second task"
+        // behaviour; see the API section in README.md.
+        const live = liveTaskFor(this.queue, url2, body.kind, body.meta);
         if (live) {
           return json(res, 409, { error: "task already in queue", existingTaskId: live.id });
         }
@@ -718,7 +736,10 @@ export class ApiServer {
       if (p === "/api/proxy/start" && req.method === "POST") {
         if (!this.proxy) return json(res, 503, { error: "proxy not available" });
         try {
-          const info = await this.proxy.start();
+          // P-14: body.mode used to be written to the config but never
+          // applied — the proxy kept whatever mode the daemon was constructed
+          // with, so switching to MITM without a restart was impossible.
+          const info = await this.proxy.start(body.mode);
           await this.config.set({ captureProxy: { ...this.config.get("captureProxy"), enabled: true, mode: body.mode || this.proxy.mode } });
           return json(res, 200, { ok: true, ...info });
         } catch (err) { return json(res, 500, { error: err.message }); }

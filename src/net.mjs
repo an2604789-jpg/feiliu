@@ -38,6 +38,23 @@ export class RangeNotSupportedError extends Error {
 }
 
 /**
+ * P-17: how long an HTTP proxy's CONNECT handshake may take.
+ *
+ * The phase used to ride the caller's request timeoutMs verbatim, so an
+ * aggressive caller budget could cut a healthy-but-slow proxy handshake
+ * before it finished (the 2026-10-25 cloud runs saw first-CONNECT drops on
+ * DASH/inspect under what amounted to a ~5s window, with every retry
+ * succeeding — the budget, not the proxy, was the failure). 15s is a floor,
+ * not the new budget: a caller with a longer request timeout keeps it, and a
+ * shorter one no longer starves CONNECT. SOCKS keeps its own budget in
+ * socksConnect(). A CONNECT failure here is a plain transport error to the
+ * retry/translation layers above (probe annotates `attempts`, the engine
+ * prefixes "after N attempts"), so raising the floor costs retry patience,
+ * never visibility.
+ */
+const CONNECT_TIMEOUT_MS = 15_000;
+
+/**
  * Errno values the local disk side of this process can raise. The
  * unknown-code arm of translateTaskError() must NOT append a network target
  * to them: in "EPERM: operation not permitted, open 'C:\\...'" the failing
@@ -477,7 +494,7 @@ function dispatchOnce(url, opts, tlsOpts) {
     if (opts.proxy) {
       const p = new URL(opts.proxy);
       if (isHttps) {
-        proxyConnect(opts.proxy, u.hostname, port, opts.timeoutMs, opts.signal)
+        proxyConnect(opts.proxy, u.hostname, port, Math.max(Number(opts.timeoutMs) || 0, CONNECT_TIMEOUT_MS), opts.signal)
           .then((socket) => {
             attachTunnel(httpsOverTunnel(socket, u, port, headerBag, opts.method, opts.insecure, tlsOpts));
             req.end();

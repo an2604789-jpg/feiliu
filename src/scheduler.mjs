@@ -105,7 +105,12 @@ export class Scheduler extends EventEmitter {
 
   nextFor(schedule) {
     if (!schedule.enabled || !schedule.at) return null;
-    return nextOccurrence(schedule.at, new Date(this.lastRun.get(schedule.id) ?? 0));
+    // A schedule that has never run has no last-run time; the old `?? 0`
+    // anchored on the epoch and listed "1970-01-01" as next. Show no time
+    // until it has actually fired once (the GUI renders the empty value).
+    const last = this.lastRun.get(schedule.id);
+    if (!last) return null;
+    return nextOccurrence(schedule.at, new Date(last));
   }
 
   add(input) {

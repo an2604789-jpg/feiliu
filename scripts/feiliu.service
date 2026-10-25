@@ -1,0 +1,33 @@
+# 飞流(FeiLiu)daemon 的 systemd 服务单元(模板,随仓库分发)。
+#
+# 使用前把下面三处 <...> 占位替换成实际值:
+#   1. <USER>                    运行服务的 Linux 用户名(两处)
+#   2. /home/<USER>/downloadx    本仓库的 clone 路径(WorkingDirectory)
+#   3. /home/<USER>/dx-data      数据根 DOWNLOADX_HOME(请先 mkdir -p 它;
+#                                端口与 token 每次启动写在它的 runtime.json)
+#
+# 安装(改完占位后):
+#   sudo cp scripts/feiliu.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now feiliu
+# 日志:journalctl -u feiliu -f
+#
+# 说明:ExecStart 的 node 路径按实际调整(nvm 安装时用 `which node` 的结果);
+# daemon 默认仅绑定本机,远程访问推荐 SSH 隧道(见 README"Linux 服务器部署"节)。
+
+[Unit]
+Description=FeiLiu (downloadx) download daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<USER>
+WorkingDirectory=/home/<USER>/downloadx
+Environment=DOWNLOADX_HOME=/home/<USER>/dx-data
+ExecStart=/usr/bin/node bin/downloadx.mjs daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

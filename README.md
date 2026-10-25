@@ -47,6 +47,25 @@ DOWNLOADX_HOME=~/dx-data node bin/downloadx.mjs daemon
 # GUI: 浏览器访问 http://127.0.0.1:<port>(token 见 ~/dx-data/runtime.json)
 ```
 
+### Linux 服务器部署(systemd 开机自启)
+
+```bash
+# 1. clone 仓库
+git clone https://github.com/an2604789-jpg/feiliu.git ~/downloadx && cd ~/downloadx
+
+# 2. 建数据根(DOWNLOADX_HOME,路径自定,与下一步保持一致)
+mkdir -p ~/dx-data
+
+# 3. 安装 systemd 服务:先编辑 scripts/feiliu.service,把其中的
+#    用户名 / 仓库路径 / 数据根三处 <...> 占位替换为实际值,然后:
+sudo cp scripts/feiliu.service /etc/systemd/system/
+sudo systemctl daemon-reload          # 每次改动单元文件后都重跑这条重载命令
+sudo systemctl enable --now feiliu    # 设开机自启并立即启动
+journalctl -u feiliu -f               # 跟踪日志
+```
+
+远程访问推荐走 SSH 隧道:本机执行 `ssh -L 18080:127.0.0.1:<daemon端口> user@服务器`,浏览器开 `http://127.0.0.1:18080` 即可,daemon 保持仅本机绑定、公网零暴露(端口与 token 见数据根下 `runtime.json`)。
+
 ## MCP(agent 接入)
 
 ```json

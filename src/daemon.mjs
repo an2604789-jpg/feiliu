@@ -355,6 +355,14 @@ const RESOLVE_LABEL = { approved: "approved", timeout: "timeout", flush: "shutdo
 /** Canary cadence: one probe per half hour of daemon life. */
 const CANARY_INTERVAL_MS = 30 * 60 * 1000;
 
+/**
+ * How long stop() waits between pausing everything and the terminal
+ * queue.saveNow(): one full save-debounce window (scheduleSave's 400ms in
+ * queue.mjs) plus abort-propagation slack, so no straggler debounced save
+ * can land after the daemon's final write. See stop() for the full race.
+ */
+const STOP_SAVE_QUIESCE_MS = 500;
+
 /** The filesystem ops one probe uses (injectable so tests never touch a real volume). */
 const CANARY_FS = {
   mkdir: (dir) => fsp.mkdir(dir, { recursive: true }),
@@ -701,7 +709,11 @@ export class Daemon {
       port: this.config.get("captureProxy").port,
       mode: this.config.get("captureProxy").mode,
       config: this.config,
-      ca: { getLeaf: (h) => this.ca.leafForSync(h) },
+      // Pass the CA itself: #mitmConnect awaits ca.leafFor(host) so a first
+      // contact with an unseen host issues and persists its leaf instead of
+      // 502ing on the read-only fast path (P-15; the read-only shim kept MITM
+      // broken in production until batch-6's acceptor caught it).
+      ca: this.ca,
     });
     this.proxy.on("capture", (entry) => {
       this.log.info("capture: " + entry.filename + " (" + entry.reason + ")");
@@ -810,6 +822,20 @@ export class Daemon {
     for (const t of [...this.queue.tasks.values()]) {
       if (ACTIVE.has(t.status)) this.queue.pause(t.id);
     }
+    // The flush above only survives if this saveNow is the LAST write to
+    // queue.json. Queue persistence is debounced (scheduleSave, 400ms) and
+    // fire-and-forget, so a save armed before this point — by this queue or
+    // by any other QueueManager sharing the process — can land AFTER
+    // saveNow and overwrite the just-flushed file with a stale task map,
+    // last-writer-wins (paths.queue resolves through the live
+    // DOWNLOADX_HOME getter, so the straggler writes wherever the env
+    // points now). The aborts above also settle asynchronously (runner
+    // catch -> apply -> another armed save). Waiting out one debounce
+    // window lets every such straggler write land first; saveNow then
+    // clears whatever is still armed and persists the final state as the
+    // terminal write. Observed live 2026-10-25: batch1-approvals' flushed
+    // entry was erased 44ms after saveNow by exactly such a straggler.
+    await new Promise((r) => setTimeout(r, STOP_SAVE_QUIESCE_MS));
     await this.queue.saveNow();
     // Let a pending history append land before the process goes away.
     await this.history?.flush?.().catch(() => {});

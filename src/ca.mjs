@@ -193,8 +193,23 @@ export class CertificateAuthority {
   }
 
   /**
-   * Synchronous leaf lookup, for the proxy's TLS socket callback.
-   * The certificate must already exist (pre-generation is the caller's job).
+   * Async leaf for the capture proxy (P-15): same resolution as leafFor —
+   * in-memory/disk hit is instant, a miss is signed and persisted. The
+   * proxy's #mitmConnect awaits this before building the TLS socket, so an
+   * unseen host is minted on its first CONNECT instead of 502ing. (Before
+   * this existed, nothing in the repository ever called leafFor, and the
+   * proxy's read-only sync lookup answered 502 for every un-pre-generated
+   * host.)
+   */
+  async getLeaf(host) {
+    return this.leafFor(host);
+  }
+
+  /**
+   * Synchronous leaf lookup, for callers that already hold a signed leaf.
+   * Read-only by design (openssl signing is async and cannot happen here);
+   * the capture proxy uses the async leafFor/getLeaf path to sign on demand,
+   * so this remains the fast path for pre-generated material only.
    */
   leafForSync(host) {
     const safe = host.replace(/[^a-zA-Z0-9._-]/g, "_");

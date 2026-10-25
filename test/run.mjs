@@ -94,6 +94,17 @@ const BATCH5_SUITES = [
   "batch5-doctor.mjs",
 ];
 
+// Batch-6 (2026-10-25): the proxy/approvals race and polish work packages —
+// P-13..P-15+P-17 proxy fixes (dedup key, start(mode), async MITM leaf,
+// CONNECT floor), P-16/P-20 scheduler display + systemd deployment docs, and
+// the stop()-flush race regression (amplified reproducer for the intermittent
+// batch1-approvals failure). Same self-contained contract as the lists above.
+const BATCH6_SUITES = [
+  "batch6-proxy.mjs",
+  "batch6-polish.mjs",
+  "batch6-approvals-race.mjs",
+];
+
 /** Run one regression suite file as a child process; resolve its exit code. */
 function runRegressionSuite(label, file) {
   return new Promise((resolve) => {
@@ -120,6 +131,7 @@ async function runBatch1() {
     ["Batch-3 regression", BATCH3_SUITES],
     ["Batch-4 regression", BATCH4_SUITES],
     ["Batch-5 regression", BATCH5_SUITES],
+    ["Batch-6 regression", BATCH6_SUITES],
   ];
   for (const [label, files] of groups) {
     for (const file of files) {
@@ -128,7 +140,7 @@ async function runBatch1() {
     }
     total += files.length;
   }
-  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5 suites: " + (total - failed) +
+  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6 suites: " + (total - failed) +
     " passed, " + failed + " failed" + NL);
   return failed === 0 ? 0 : 1;
 }

@@ -34,6 +34,38 @@ const BINARY_TYPES = /^(application\/(octet-stream|zip|x-msdownload|x-msdos-prog
 const DEFAULT_MAX_CAPTURE = 500;
 
 /**
+ * The proxy URL an upstream request should leave through, from the standard
+ * environment variables (P-15, env half; the explicit wiring for what
+ * NODE_USE_ENV_PROXY used to paper over — a Node >= 24 experiment that is
+ * unset on most machines and on Windows).
+ *
+ * NO_PROXY is honoured first (comma-separated; "*" matches everything; a
+ * leading "." or bare suffix matches the host and its subdomains).
+ * Registry / system-proxy discovery is deliberately NOT here: that is the
+ * proxyMode consumption work of P-18 (batch-7).
+ *
+ * @param {string} host the origin host, for NO_PROXY exclusion
+ * @returns {string|null} a proxy URL, or null for a direct connection
+ */
+export function envProxyFor(host) {
+  const noProxy = String(process.env.NO_PROXY || process.env.no_proxy || "");
+  const target = String(host || "").toLowerCase();
+  if (target && noProxy) {
+    for (const raw of noProxy.split(",")) {
+      let pat = raw.trim().toLowerCase();
+      if (!pat) continue;
+      if (pat === "*") return null;
+      if (pat.startsWith(".")) pat = pat.slice(1);
+      if (target === pat || target.endsWith("." + pat)) return null;
+    }
+  }
+  const v = process.env.HTTPS_PROXY || process.env.https_proxy
+    || process.env.ALL_PROXY || process.env.all_proxy
+    || process.env.HTTP_PROXY || process.env.http_proxy;
+  return v ? String(v) : null;
+}
+
+/**
  * Decide whether a response is something the user would want to download.
  * Deliberately conservative: a false positive interrupts browsing, a false
  * negative is only a missed convenience.
@@ -88,7 +120,7 @@ export class CaptureProxy extends EventEmitter {
     this.host = opts.host || "127.0.0.1";
     this.port = opts.port ?? 0;
     this.mode = opts.mode === "mitm" ? "mitm" : "tunnel";
-    this.ca = opts.ca || null;              // { key, cert, getLeaf(host) }
+    this.ca = opts.ca || null;              // CA or { leafFor(host) } / legacy { getLeaf(host) }
     this.maxCapture = opts.maxCapture ?? DEFAULT_MAX_CAPTURE;
     this.config = opts.config;
     this.upstreamProxy = opts.upstreamProxy || null;
@@ -104,8 +136,22 @@ export class CaptureProxy extends EventEmitter {
 
   get enabled() { return Boolean(this.server); }
 
-  /** Start listening. @returns {Promise<{host:string,port:number,mode:string}>} */
-  async start() {
+  /**
+   * Start listening.
+   *
+   * @param {("tunnel"|"mitm")} [mode] optional mode switch (P-14). Applied
+   *        BEFORE the listener exists: #onConnect reads this.mode per
+   *        connection, so the mode must be in place before the first CONNECT
+   *        arrives — that is the whole point of accepting it here. The old
+   *        signature took no argument, which made POST /api/proxy/start's
+   *        mode field a no-op until a daemon restart.
+   * @returns {Promise<{host:string,port:number,mode:string}>}
+   */
+  async start(mode) {
+    if (mode !== undefined && mode !== "tunnel" && mode !== "mitm") {
+      throw new Error('proxy mode must be "tunnel" or "mitm", got ' + JSON.stringify(mode));
+    }
+    if (mode !== undefined) this.mode = mode;
     if (this.server) return { host: this.host, port: this.port, mode: this.mode };
     this.server = http.createServer((req, res) => this.#onRequest(req, res));
     this.server.on("connection", (socket) => {
@@ -202,7 +248,12 @@ export class CaptureProxy extends EventEmitter {
     const port = Number(portText || 443);
 
     if (this.mode === "mitm" && this.ca) {
-      this.#mitmConnect(host, port, clientSocket, head);
+      // Async since P-15 (leaf signing). Not awaited: this is an event
+      // handler. Every failure path inside answers the client socket; the
+      // catch is a last-resort belt so nothing escapes as unhandled.
+      this.#mitmConnect(host, port, clientSocket, head).catch(() => {
+        try { clientSocket.destroy(); } catch { /* gone */ }
+      });
       return;
     }
 
@@ -224,15 +275,44 @@ export class CaptureProxy extends EventEmitter {
     clientSocket.on("error", teardown);
   }
 
-  #mitmConnect(host, port, clientSocket, head) {
+  /**
+   * Leaf material for a MITM'd host (P-15).
+   *
+   * Resolution order:
+   *   1. ca.leafFor(host) — the full path: an in-memory/disk hit is instant
+   *      (the fast case leafForSync used to cover alone), a MISS signs a new
+   *      leaf with openssl and persists it. Awaited by #mitmConnect before
+   *      any TLS socket exists.
+   *   2. ca.getLeaf(host) — the legacy wrapper shape around leafForSync
+   *      (read-only). Kept so wiring that pre-generates leaves keeps working;
+   *      a thenable is awaited, so an async getLeaf works too.
+   */
+  async #leafFor(host) {
+    if (this.ca && typeof this.ca.leafFor === "function") return this.ca.leafFor(host);
+    if (this.ca && typeof this.ca.getLeaf === "function") {
+      const r = this.ca.getLeaf(host);
+      return (r && typeof r.then === "function") ? await r : r;
+    }
+    throw new Error("the CA object exposes no leaf source");
+  }
+
+  async #mitmConnect(host, port, clientSocket, head) {
+    // Signing an unseen host shells out to openssl (hundreds of ms); a client
+    // that gives up meanwhile must not turn the late writes into an unhandled
+    // error event.
+    clientSocket.on("error", () => { try { clientSocket.destroy(); } catch { /* gone */ } });
     let leaf;
     try {
-      leaf = this.ca.getLeaf(host);
+      // P-15: the old code called the synchronous read-only lookup here, which
+      // threw for every host nobody had pre-generated a certificate for —
+      // hence the all-hosts 502 in the field. The async path signs on demand.
+      leaf = await this.#leafFor(host);
     } catch (err) {
       this.stats.errors++;
       clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
       return;
     }
+    if (clientSocket.destroyed) return;
     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
     const tlsSocket = new tls.TLSSocket(clientSocket, {
@@ -255,20 +335,73 @@ export class CaptureProxy extends EventEmitter {
 
   #forwardMitm(host, port, req, res) {
     const headers = { ...req.headers, host: host + (port === 443 ? "" : ":" + port) };
-    const upstream = https.request({
-      host, port, method: req.method, path: req.url, headers,
-      rejectUnauthorized: false,   // the client's trust decision is theirs; we only observe
-    }, (upRes) => {
-      this.#observe({ url: "https://" + host + req.url, method: req.method, statusCode: upRes.statusCode, headers: upRes.headers, decrypted: true });
-      res.writeHead(upRes.statusCode, upRes.headers);
-      upRes.pipe(res);
-    });
-    upstream.on("error", (err) => {
+    const fail = (err) => {
       this.stats.errors++;
       if (!res.headersSent) { res.writeHead(502, { "Content-Type": "text/plain" }); res.end("downloadx proxy: " + err.message); }
       else try { res.destroy(); } catch { /* gone */ }
+    };
+    const send = (extra) => {
+      const upstream = https.request({
+        host, port, method: req.method, path: req.url, headers,
+        rejectUnauthorized: false,   // the client's trust decision is theirs; we only observe
+        ...extra,
+      }, (upRes) => {
+        this.#observe({ url: "https://" + host + req.url, method: req.method, statusCode: upRes.statusCode, headers: upRes.headers, decrypted: true });
+        res.writeHead(upRes.statusCode, upRes.headers);
+        upRes.pipe(res);
+      });
+      upstream.on("error", fail);
+      req.pipe(upstream);
+    };
+
+    // P-15: MITM used to dial the origin directly and lean on
+    // NODE_USE_ENV_PROXY (a Node >= 24 experiment, unset on most machines and
+    // on Windows) for the machine's proxy. Now the upstream request leaves
+    // through the explicitly configured upstream, else the standard env
+    // vars. Registry/system-proxy discovery is the proxyMode work of P-18
+    // (batch-7) and is deliberately not read here.
+    const proxyUrl = this.upstreamProxy || envProxyFor(host);
+    if (!proxyUrl) {
+      send({});
+      return;
+    }
+    const p = new URL(proxyUrl);
+    const connect = http.request({
+      host: p.hostname,
+      port: Number(p.port || 80),
+      method: "CONNECT",
+      path: host + ":" + port,
+      headers: { Host: host + ":" + port },
+      agent: false,
     });
-    req.pipe(upstream);
+    connect.once("connect", (cres, socket) => {
+      if (cres.statusCode !== 200) {
+        socket.destroy();
+        fail(new Error("upstream proxy CONNECT failed: HTTP " + cres.statusCode + " for " + host));
+        return;
+      }
+      socket.setNoDelay(true);
+      // TLS over the tunnel, mirroring net.mjs's httpsOverTunnel ownership
+      // rule: the raw socket to the proxy is destroyed with the TLS side, or
+      // a finished request leaves a live connection (and a live event loop
+      // reference) behind.
+      const tlsSocket = tls.connect({ socket, servername: host, rejectUnauthorized: false });
+      tlsSocket.on("error", () => {});
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        try { tlsSocket.destroy(); } catch { /* gone */ }
+        try { socket.destroy(); } catch { /* gone */ }
+      };
+      // Every terminal path: the client response closed (body drained, or
+      // destroyed by the error handler above) ends the tunnel with it.
+      res.once("close", release);
+      tlsSocket.once("close", () => { try { socket.destroy(); } catch { /* gone */ } });
+      send({ createConnection: () => tlsSocket });
+    });
+    connect.once("error", fail);
+    connect.end();
   }
 
   // ------------------------------------------------------------- capture
