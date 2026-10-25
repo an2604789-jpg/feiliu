@@ -47,7 +47,18 @@ export const DEFAULT_CONFIG = {
   maxRetries: 6,
   retryBaseMs: 500,
 
-  /** Networking. */
+  /**
+   * Networking. `proxy` is the manual proxy URL (may carry user:pass, which
+   * the net layer turns into a Proxy-Authorization header — P-18); how it is
+   * applied is decided by proxyMode, consumed for real by the downloader's
+   * per-run selection (selectRunProxy in src/downloader.mjs, P-18/batch-7):
+   *   * "manual" — always this proxy;
+   *   * "none"   — never any proxy, even when this field is set;
+   *   * "system" — the OS-configured proxy (registry on Windows, env vars
+   *     elsewhere; src/sysproxy.mjs), with this field as the fallback when
+   *     the OS has no proxy configured. Per-task proxies set by the API/CLI
+   *     caller outrank the mode entirely.
+   */
   proxy: "",
   proxyMode: "system",   // system | manual | none
   userAgent: "",          // empty = built-in default

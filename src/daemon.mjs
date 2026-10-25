@@ -28,6 +28,15 @@ import { VERSION } from "./version.mjs";
 export const ASK_QUEUE_IDS = new Set(["extension", "clipboard"]);
 
 /**
+ * How long the identity probe (P-19) waits for the recorded holder's
+ * /api/status. The probe goes to loopback and answers in milliseconds when
+ * the holder is alive; three seconds therefore only runs out on a holder
+ * whose event loop is wedged — which is precisely the state in which
+ * taking the root over is the recovery, not the hazard.
+ */
+const LOCK_PROBE_TIMEOUT_MS = 3000;
+
+/**
  * Single writer per data root.
  *
  * Two daemons sharing one root split-brain the queue: each holds its own
@@ -38,6 +47,26 @@ export const ASK_QUEUE_IDS = new Set(["extension", "clipboard"]);
  * The lock file is created exclusively before listen(); a starter whose
  * holder is still alive stands down, and a dead holder's lock is broken so
  * crash recovery keeps working.
+ *
+ * Lock file shape: { pid, port, token, startedAt }. It is written in two
+ * steps, because the lock must exist before listen() (two daemons must not
+ * race for the port) while port/token only exist after it: the exclusive
+ * create writes { pid, startedAt }, and stampLockIdentity() adds the
+ * holder's port and token once the API answers. Those two fields are the
+ * identity credentials a later starter probes (see holderStillOurs).
+ *
+ * P-19 (pid reuse): "the pid is alive" is not identity. Operating systems
+ * recycle pids aggressively, so a crashed daemon's lock can name a pid that
+ * now belongs to an unrelated process; kill(pid, 0) then succeeds and the
+ * starter used to refuse to boot until a human deleted daemon.lock. Plan A
+ * (compare the holder's process start time against /proc/<pid>/stat field
+ * 22) is provable on Linux but has no zero-dependency equivalent on Windows
+ * (Node exposes no process creation time; shelling out to wmic is a
+ * dependency and a fragile one), so this is plan B: after the pid reads
+ * alive, one GET /api/status to the recorded port with the recorded token.
+ * Only a service that knows the token the lock itself carries — i.e. the
+ * daemon that wrote the lock — can answer 200 with a downloadx status body,
+ * on every platform, with nothing but the built-in fetch.
  */
 async function acquireRootLock() {
   const lockPath = path.join(paths.root, "daemon.lock");
@@ -47,22 +76,29 @@ async function acquireRootLock() {
       handle = await fsp.open(lockPath, "wx");
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      let holderPid = null;
-      try { holderPid = JSON.parse(await fsp.readFile(lockPath, "utf8")).pid ?? null; } catch { /* torn file */ }
+      let holder = null;
+      try { holder = JSON.parse(await fsp.readFile(lockPath, "utf8")); } catch { /* torn file */ }
+      const holderPid = holder?.pid ?? null;
       let alive = false;
       if (holderPid) {
         try { process.kill(holderPid, 0); alive = true; }
         catch (e) { alive = e.code === "EPERM"; }
       }
+      // P-19: a live pid proves only that the number has an owner, not that
+      // the owner is our daemon. Probe the recorded identity before letting
+      // the pid alone block startup.
+      if (alive && !(await holderStillOurs(holder))) alive = false;
       if (alive) {
         const err = new Error(
           "another downloadx daemon (pid " + holderPid + ") already owns this data root (" +
-          paths.root + "); if that pid is not a downloadx daemon, delete daemon.lock there"
+          paths.root + ") and confirmed its identity via /api/status; " +
+          "stop that daemon, or delete daemon.lock there to force takeover"
         );
         err.code = "DAEMON_PEER_OWNER";
         throw err;
       }
-      // Stale lock from a crashed daemon: break it and retry the create.
+      // Stale lock from a crashed daemon (or a pid the OS handed to an
+      // unrelated process): break it and retry the create.
       await fsp.rm(lockPath, { force: true }).catch(() => {});
       continue;
     }
@@ -73,6 +109,69 @@ async function acquireRootLock() {
   const err = new Error("could not acquire the daemon lock at " + lockPath);
   err.code = "DAEMON_LOCK_BUSY";
   throw err;
+}
+
+/**
+ * Identity probe for a lock's holder (P-19, plan B).
+ *
+ * A lock written before this change (or in the window between the exclusive
+ * create and stampLockIdentity) carries only { pid, startedAt }: no
+ * credentials to probe, so the starter falls back to the pre-P-19 rule —
+ * a live pid is yielded to. That window is exactly "a holder is starting
+ * up right now", where yielding is the correct behaviour anyway, and an
+ * old-format leftover keeps its manual-delete escape hatch.
+ *
+ * For a lock with port+token: one GET /api/status to loopback with the
+ * token from the lock. The token is 24 random bytes only the writing daemon
+ * ever held (lock file, runtime.json, its own memory), so a 200 that speaks
+ * downloadx is proof the process behind the pid is still the holder. A
+ * reused pid's process cannot know the token; nothing on that port does.
+ *
+ * "version matches" is read as: the body carries a non-empty version string,
+ * i.e. it is a downloadx /api/status answering. Deliberately NOT strict
+ * equality with this binary's VERSION: an older daemon still legitimately
+ * owns the root during an upgrade, and breaking a live holder's lock would
+ * re-create the exact split-brain this lock exists to prevent — the
+ * identity question (is it our daemon?) is what the probe answers, not the
+ * build question (is it my build?).
+ *
+ * Any transport failure, non-200, unparsable body or missing version means
+ * the holder is gone: resolved as false, and the caller treats the lock as
+ * stale. The probe never throws.
+ *
+ * @returns {Promise<boolean>} true when the holder is (still) ours and live.
+ */
+async function holderStillOurs(holder) {
+  if (!holder || !Number.isInteger(holder.port) || !holder.token) return true; // legacy/unstamped: yield on pid alone
+  try {
+    const res = await fetch(`http://127.0.0.1:${holder.port}/api/status`, {
+      headers: { "x-downloadx-token": String(holder.token) },
+      signal: AbortSignal.timeout(LOCK_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return typeof body?.version === "string" && body.version.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Add this daemon's port and token to the lock it holds (P-19).
+ *
+ * Called right after listen(): the exclusive create could not know them,
+ * and every later starter needs both to run the identity probe. Written
+ * temp-then-rename so a concurrent reader sees either the complete old
+ * record or the complete new one, never a torn half of either. If the lock
+ * cannot be read back (deleted out from under us), nothing is written —
+ * recreating the file would fabricate a lock nobody won exclusively.
+ */
+async function stampLockIdentity(lockPath, { port, token }) {
+  let base = {};
+  try { base = JSON.parse(await fsp.readFile(lockPath, "utf8")); } catch { return; }
+  const tmp = lockPath + ".tmp";
+  await fsp.writeFile(tmp, JSON.stringify({ ...base, pid: process.pid, port, token }), "utf8");
+  await fsp.rename(tmp, lockPath);
 }
 
 /**
@@ -771,6 +870,10 @@ export class Daemon {
     if (this.config.get("remoteAccess")) this.host = "0.0.0.0";
     const info = await this.api.listen({ port: this.port, host: this.host });
     this.info = info;
+    // P-19: the lock was created before listen() and carries no identity yet;
+    // now that the API answers, record port+token so a later starter can
+    // probe this daemon instead of trusting the raw pid.
+    await stampLockIdentity(this.lockPath, { port: info.port, token: info.token });
     // Scheduled bandwidth windows must reach the live rate limiter.
     this.scheduler.onTick = (now) => this.scheduler.applySpeedLimit(this.downloader, now);
     this.scheduler.on("speed-limit", ({ limit, schedule }) =>

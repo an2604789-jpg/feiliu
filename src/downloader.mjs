@@ -24,6 +24,7 @@ import { requestFollow, readBody, readBodyToFile, buildRequestHeaders, abortErro
 import { RateLimiter, ChainLimiter } from "./rate.mjs";
 import { SUBDIR as StoreSubdir, STAGING_SUFFIX as StoreStagingSuffix, TransferStore } from "./store.mjs";
 import { filenameFromUrl, sanitizeName, formatBytes, ensureExtension, mkdirWithRetry } from "./util.mjs";
+import { resolveSystemProxy, matchesNoProxy } from "./sysproxy.mjs";
 
 /**
  * How many consecutive failed resume attempts one segment journal may cost
@@ -61,6 +62,67 @@ import { filenameFromUrl, sanitizeName, formatBytes, ensureExtension, mkdirWithR
  * No new top-level on-disk artefact is introduced.
  */
 export const RESUME_FAILURE_BUDGET = 3;
+
+/**
+ * P-18: decide which proxy one transfer uses, from proxyMode.
+ *
+ * proxyMode (system | manual | none) existed in config.mjs — defined,
+ * validated, shown in the GUI — but nothing consumed it: "use system proxy"
+ * read neither the system nor anything else. This function is the single
+ * decision point; run() applies it to `prepared` and every strategy below
+ * reads the result off the task instead of re-consulting Settings.
+ *
+ * Rules, fixed by the batch-7 ruling:
+ *   * a per-task proxy (task.proxy, set by the API/CLI caller) beats every
+ *     mode — it is that task's own explicit choice, exactly the precedence
+ *     Settings already had;
+ *   * manual → the Settings proxy (config.proxy), verbatim;
+ *   * none   → no proxy at all, even if config.proxy is set;
+ *   * system → the discovered system proxy (sysproxy.resolveSystemProxy:
+ *     registry on Windows, env vars elsewhere), with config.proxy as the
+ *     FALLBACK when discovery finds nothing. Rationale: "system" is also the
+ *     DEFAULT mode, so a user who configured a manual proxy in Settings and
+ *     left the mode alone must not lose their proxy just because their
+ *     machine has no OS-level proxy configured — the explicit Settings value
+ *     is honoured until the OS actually offers one. When discovery does find
+ *     a proxy it WINS over config.proxy: the user asked for the system's
+ *     answer, and the system just gave one.
+ *
+ * noProxy (Windows ProxyOverride / no_proxy env): when the target host is on
+ * the system's own exclusion list, the transfer goes direct — the list is the
+ * system's answer for this very question, and it applies before any fallback
+ * (a fallback proxy the exclusion list never heard of would defeat the
+ * exclusion). The host check uses the task's URL as filed; a redirect to a
+ * different host keeps the chosen proxy, the same trade every download
+ * manager that resolves once per task makes.
+ *
+ * Exported and pure (the discovery result is passed in) so the three modes
+ * are unit-testable without a registry or an environment.
+ *
+ * @param {{taskProxy?:string, mode?:string, configured?:string, url?:string,
+ *          systemProxy?:{http:string|null,https:string|null,noProxy:string[]}|null}} input
+ * @returns {string|undefined} the proxy URL for this transfer, or undefined
+ */
+export function selectRunProxy({ taskProxy, mode, configured, url, systemProxy } = {}) {
+  if (taskProxy) return taskProxy;
+  const settings = String(configured || "");
+  if (mode === "none") return undefined;
+  if (mode === "manual") return settings || undefined;
+  // "system" — and any value config.sanitize has not met before, which it
+  // coerces to "system" anyway; being defensive here costs nothing.
+  const sys = systemProxy || null;
+  if (!sys) return settings || undefined;
+  let host = "";
+  let isHttps = false;
+  try {
+    const u = new URL(String(url || ""));
+    host = u.hostname;
+    isHttps = u.protocol === "https:";
+  } catch { /* an unparseable URL never gets a proxy decision from the system list */ }
+  if (host && matchesNoProxy(host, sys.noProxy)) return undefined;
+  const chosen = isHttps ? (sys.https || sys.http) : (sys.http || sys.https);
+  return chosen || settings || undefined;
+}
 
 /**
  * Comparison key for a filesystem path, per the current platform's default
@@ -1066,9 +1128,20 @@ export class Downloader extends EventEmitter {
     const prepared = { ...task, headers: buildRequestHeaders(task) };
 
     // A proxy set in Settings applies to every transfer unless this task names
-    // its own. Only the per-task value was ever read, so choosing a proxy in
-    // the GUI silently had no effect on downloads.
-    if (!prepared.proxy) prepared.proxy = this.config.get("proxy") || undefined;
+    // its own — and since P-18, HOW that decision is made is the proxyMode
+    // switch (see selectRunProxy for the exact rules): manual = Settings,
+    // none = direct, system = OS discovery with Settings as the fallback.
+    // The discovery only runs in system mode, so manual/none starts cost no
+    // registry query, and resolveSystemProxy's own 30s cache keeps a burst of
+    // tasks from spawning reg.exe per download.
+    const proxyMode = this.config.get("proxyMode") || "system";
+    prepared.proxy = selectRunProxy({
+      taskProxy: prepared.proxy,
+      mode: proxyMode,
+      configured: this.config.get("proxy") || "",
+      url: prepared.url,
+      systemProxy: proxyMode === "system" ? await resolveSystemProxy() : null,
+    });
 
     // P-8: this run's retry tally starts at zero. Segment engines wired by
     // #segmentEngine count their "retry" events into it, and #finalTaskError
@@ -1192,7 +1265,7 @@ export class Downloader extends EventEmitter {
 
   async runHttp(task, controller, progressCb) {
     const info = await probe(task.url, {
-      headers: task.headers, proxy: task.proxy ?? this.config.get("proxy") ?? undefined,
+      headers: task.headers, proxy: task.proxy,
       insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
       // Transient failures at probe time must not fail the whole task.
       maxRetries: this.config.get("maxRetries"),
@@ -1246,7 +1319,7 @@ export class Downloader extends EventEmitter {
           url: task.url,
           targetPath: target,
           headers: task.headers,
-          proxy: task.proxy ?? this.config.get("proxy") ?? undefined,
+          proxy: task.proxy,
           insecure: task.insecure ?? this.config.get("insecure"),
           // Per-task bucket only: the downloader-wide bucket rides in
           // sharedLimiter so a live window change still reaches this transfer.
@@ -1351,7 +1424,7 @@ export class Downloader extends EventEmitter {
       // Only allow splitting when the origin said it serves ranges.
       rangeSupport: info.supportsRanges !== false,
       headers: task.headers,
-      proxy: task.proxy ?? this.config.get("proxy") ?? undefined,
+      proxy: task.proxy,
       insecure: task.insecure ?? this.config.get("insecure"),
       maxRate: task.speedLimit ?? this.config.get("speedLimit"),
       sharedLimiter: this.limiter,
@@ -1494,7 +1567,7 @@ export class Downloader extends EventEmitter {
 
   async runHls(task, controller, progressCb) {
     const { playlist, url: mediaUrl, variants, chosen } = await resolvePlaylist(task.url, {
-      headers: task.headers, proxy: task.proxy ?? this.config.get("proxy") ?? undefined,
+      headers: task.headers, proxy: task.proxy,
       insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
       variantIndex: task.meta?.variantIndex,
     });
@@ -1595,7 +1668,7 @@ export class Downloader extends EventEmitter {
     try {
       if (playlist.mapUri) {
         const res = await requestFollow(playlist.mapUri, {
-          headers: task.headers, proxy: task.proxy ?? this.config.get("proxy") ?? undefined,
+          headers: task.headers, proxy: task.proxy,
           insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
         });
         // The init segment is part of the same download, so it is throttled
@@ -1625,7 +1698,7 @@ export class Downloader extends EventEmitter {
       if (audioUri) {
         this.emit("log", { taskId: task.id, message: "HLS: separate audio rendition found, fetching it" });
         const audioRes = await resolvePlaylist(audioUri, {
-          headers: task.headers, proxy: task.proxy || this.config.get("proxy") || undefined,
+          headers: task.headers, proxy: task.proxy,
           insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
         });
         if (audioRes.playlist.isMedia && audioRes.playlist.segments.length) {
@@ -1659,7 +1732,7 @@ export class Downloader extends EventEmitter {
               // P-7：字节口径累计（含视频阶段已写分片），分片数另列字段。
               const written = await fetchMediaPartToFile(job.s.uri, p, {
                 headers: task.headers,
-                proxy: task.proxy || this.config.get("proxy") || undefined,
+                proxy: task.proxy,
                 insecure: task.insecure ?? this.config.get("insecure"),
                 signal: controller.signal,
                 limiter,
@@ -1726,7 +1799,7 @@ export class Downloader extends EventEmitter {
   async #resolveHlsAudioRendition(masterUrl, groupId, task, controller) {
     try {
       const res = await requestFollow(masterUrl, {
-        headers: task.headers, proxy: task.proxy || this.config.get("proxy") || undefined,
+        headers: task.headers, proxy: task.proxy,
         insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
       });
       const text = (await readBody(res)).toString("utf8");
@@ -1763,7 +1836,7 @@ export class Downloader extends EventEmitter {
    */
   async runDash(task, controller, progressCb) {
     const res = await requestFollow(task.url, {
-      headers: task.headers, proxy: task.proxy || this.config.get("proxy") || undefined,
+      headers: task.headers, proxy: task.proxy,
       insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
     });
     const xml = (await readBody(res)).toString("utf8");
@@ -1871,7 +1944,7 @@ export class Downloader extends EventEmitter {
           });
           const initUrl = initTemplate.startsWith("http") ? initTemplate : absolute(initTemplate);
           const ir = await requestFollow(initUrl, {
-            headers: task.headers, proxy: task.proxy || this.config.get("proxy") || undefined,
+            headers: task.headers, proxy: task.proxy,
             insecure: task.insecure ?? this.config.get("insecure"), signal: controller.signal,
           });
           // Streamed into the track file (throttled with the same bucket),

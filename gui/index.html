@@ -538,11 +538,12 @@
                   <option value="manual">手动指定代理</option>
                   <option value="none">直连（不使用代理）</option>
                 </select>
+                <span class="hint">使用系统代理:自动读取系统/浏览器代理设置;手动指定:始终用下方地址;直连:忽略一切代理</span>
               </div>
               <div class="field">
                 <label>手动代理地址</label>
                 <input type="text" id="cfg-proxy" placeholder="http://host:port 或 socks5://user:pass@host:port">
-                <span class="hint">仅在“手动指定代理”时使用</span>
+                <span class="hint">仅在“手动指定代理”时使用;支持 http://user:pass@host:port 与 socks5://user:pass@host:port 形态,user:pass 为代理服务器的鉴权凭据</span>
               </div>
               <div class="field full">
                 <label>自定义 User-Agent（留空使用内置默认）</label>

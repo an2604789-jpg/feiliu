@@ -143,15 +143,55 @@ export function translateTaskError(err, { url } = {}) {
   return null;
 }
 
+/**
+ * P-18: Proxy-Authorization from credentials embedded in the proxy URL.
+ *
+ * The proxy URL has always accepted user:pass (the SOCKS path parses them)
+ * but the HTTP CONNECT never sent them, so an authenticated proxy answered
+ * 407 to every tunnel and the download died — the manual Settings proxy was
+ * unusable on any network that requires a login.
+ *
+ * Credential discipline: this function only ever RETURNS the finished header
+ * value; it does not log, throw with the URL embedded, or leak the raw
+ * user:pass anywhere. An unparseable URL yields null (no header), not an
+ * error echoing the credential. Every failure message further down the proxy
+ * paths names the proxy HOST, never the URL it came from.
+ *
+ * @param {string} proxyUrl a proxy URL that may carry user:pass
+ * @returns {string|null} "Basic …" or null when there is nothing to send
+ */
+export function proxyAuthHeader(proxyUrl) {
+  try {
+    const p = new URL(proxyUrl);
+    if (!p.username && !p.password) return null;
+    const cred = decodeURIComponent(p.username || "") + ":" + decodeURIComponent(p.password || "");
+    return "Basic " + Buffer.from(cred, "utf8").toString("base64");
+  } catch {
+    return null;
+  }
+}
+
 function proxyConnect(proxyUrl, host, port, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
-    const p = new URL(proxyUrl);
+    // A bad proxy URL must not reject with Node's ERR_INVALID_URL, whose
+    // `input` carries the full URL — credentials included (see
+    // proxyAuthHeader for the discipline). The message names no URL at all.
+    let p;
+    try {
+      p = new URL(proxyUrl);
+    } catch {
+      reject(new Error("invalid proxy URL"));
+      return;
+    }
+    const connectHeaders = { Host: `${host}:${port}`, "Proxy-Connection": "keep-alive" };
+    const auth = proxyAuthHeader(proxyUrl);
+    if (auth) connectHeaders["Proxy-Authorization"] = auth;
     const req = http.request({
       host: p.hostname,
       port: Number(p.port || 80),
       method: "CONNECT",
       path: `${host}:${port}`,
-      headers: { Host: `${host}:${port}`, "Proxy-Connection": "keep-alive" },
+      headers: connectHeaders,
       agent: false,
     });
     const onAbort = () => req.destroy(new Error("aborted"));
@@ -507,7 +547,16 @@ function dispatchOnce(url, opts, tlsOpts) {
         port: Number(p.port || 80),
         path: url,
         method: opts.method,
-        headers: { ...headerBag, Host: u.host },
+        // The plain-HTTP-through-proxy hop needs the proxy's own credential
+        // just like CONNECT does (P-18): an authenticated proxy refuses the
+        // absolute-URI request with 407 without it. This header addresses the
+        // proxy, never the origin, so it rides outside headerBag.
+        headers: (() => {
+          const h = { ...headerBag, Host: u.host };
+          const auth = proxyAuthHeader(opts.proxy);
+          if (auth) h["Proxy-Authorization"] = auth;
+          return h;
+        })(),
       });
     } else if (isHttps) {
       req = https.request({

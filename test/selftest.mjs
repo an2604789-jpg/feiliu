@@ -1446,6 +1446,15 @@ const hashFile = async (p) => {
       await cfg.set({
         defaultDir: out, categorizeByType: false, overwriteExisting: "overwrite",
         maxConnections: 2, proxy: proxy.url,
+        // Batch-7 hermeticity (P-18): this test asserts that the Settings
+        // proxy IS used, which is exactly manual-mode semantics. Under the
+        // default "system" mode the OS proxy discovery would WIN over the
+        // Settings value (the fixed batch-7 ruling), so on a machine whose
+        // OS proxy is enabled the transfer would silently ride the host's
+        // proxy instead of the SOCKS one below and "the proxy must have
+        // been used" would fail. Pin the mode so the suite is independent
+        // of the host machine's proxy state.
+        proxyMode: "manual",
       });
       const q = new QueueManager({ config: cfg });
       await q.load();

@@ -105,6 +105,17 @@ const BATCH6_SUITES = [
   "batch6-approvals-race.mjs",
 ];
 
+// Batch-7 (2026-10-25): P-18 proxyMode real consumption + proxy authentication
+// (sysproxy discovery, selectRunProxy, Proxy-Authorization on both proxy hops),
+// P-19 daemon.lock pid-reuse identity probe, and the P-18 documentation copy
+// (GUI hints + README proxy section). Same self-contained contract as the
+// lists above: own runner, own throwaway DOWNLOADX_HOME, clean exit.
+const BATCH7_SUITES = [
+  "batch7-proxyauth.mjs",
+  "batch7-lockguard.mjs",
+  "batch7-docs.mjs",
+];
+
 /** Run one regression suite file as a child process; resolve its exit code. */
 function runRegressionSuite(label, file) {
   return new Promise((resolve) => {
@@ -132,6 +143,7 @@ async function runBatch1() {
     ["Batch-4 regression", BATCH4_SUITES],
     ["Batch-5 regression", BATCH5_SUITES],
     ["Batch-6 regression", BATCH6_SUITES],
+    ["Batch-7 regression", BATCH7_SUITES],
   ];
   for (const [label, files] of groups) {
     for (const file of files) {
@@ -140,7 +152,7 @@ async function runBatch1() {
     }
     total += files.length;
   }
-  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6 suites: " + (total - failed) +
+  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6+batch7 suites: " + (total - failed) +
     " passed, " + failed + " failed" + NL);
   return failed === 0 ? 0 : 1;
 }

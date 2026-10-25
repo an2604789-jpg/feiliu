@@ -38,6 +38,15 @@ node bin/downloadx.mjs get "https://example.com/big.iso" -c 16
 node test/run.mjs                    # 全量:selftest 293 项 + 24 个回归套件
 ```
 
+## 代理
+
+代理相关配置在设置页的“网络与安全”区(`config.json` 的 `proxyMode` 与 `proxy`):
+
+- **proxyMode 三态语义**:`system`(默认)=使用系统代理,自动读取系统/浏览器代理设置;`manual`=手动指定代理,始终用下方地址(即 `proxy` 字段);`none`=直连,忽略一切代理。
+- **代理地址可携带鉴权凭据**:支持 `http://user:pass@host:port` 与 `socks5://user:pass@host:port` 两种形态,`user:pass` 是代理服务器的鉴权凭据(SOCKS5 走 RFC 1929 用户名/密码握手,HTTP 代理在 CONNECT 时携带 Proxy-Authorization);凭据中的特殊字符需按 URL 百分号编码书写。
+- **BT(aria2c)在代理环境下的限制**:磁力链接与 .torrent 委托外部 aria2c 下载,任务或设置中的代理地址会以 `--all-proxy` 透传给 aria2c;但 BitTorrent 协议走 UDP(DHT、tracker)并向 peer 发起直连,在只放行 HTTP CONNECT 的出口(常见云桌面/公司网络)下会一直“零字节”——这是环境限制而非缺陷,需要 BT 可用时请放行 UDP/直连出网。
+- **抓取代理(captureProxy)与 upstreamProxy 的关系**:抓取代理(默认关闭)自身出网时,显式配置的上游代理优先(`config.json` 的 `captureProxy.upstreamProxy`);未显式配置时遵循标准环境变量 `HTTPS_PROXY`/`ALL_PROXY`/`HTTP_PROXY`,并遵循 `NO_PROXY`(`*` 表示全部直连,前导点匹配子域)。抓取代理不读取系统/注册表代理设置。
+
 ## Linux / 服务器
 
 纯 Node 实现,Linux 开箱即用(剪贴板监控自动降级):
