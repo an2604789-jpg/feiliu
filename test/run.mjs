@@ -129,6 +129,15 @@ const BATCH8_SUITES = [
   "batch8-bridge.mjs",
 ];
 
+// Batch-9 (2026-10-31, after v1.2.0): the ELECTRON_RUN_AS_NODE bootstrap guard.
+// Hosts that export ELECTRON_RUN_AS_NODE=1 to their children turn electron.exe
+// into a plain Node interpreter, so main.mjs dies on its first import and the
+// window never appears. desktop/bootstrap.cjs is now the packaged entry; this
+// suite locks the relaunch decision, the entry wiring and the fail-loud log.
+const BATCH9_SUITES = [
+  "desktop-bootstrap.mjs",
+];
+
 /** Run one regression suite file as a child process; resolve its exit code. */
 function runRegressionSuite(label, file) {
   return new Promise((resolve) => {
@@ -158,6 +167,7 @@ async function runBatch1() {
     ["Batch-6 regression", BATCH6_SUITES],
     ["Batch-7 regression", BATCH7_SUITES],
     ["Batch-8 regression", BATCH8_SUITES],
+    ["Batch-9 regression", BATCH9_SUITES],
   ];
   for (const [label, files] of groups) {
     for (const file of files) {
@@ -166,7 +176,7 @@ async function runBatch1() {
     }
     total += files.length;
   }
-  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6+batch7+batch8 suites: " + (total - failed) +
+  process.stdout.write(NL + "  batch1+batch2+batch3+batch4+batch5+batch6+batch7+batch8+batch9 suites: " + (total - failed) +
     " passed, " + failed + " failed" + NL);
   return failed === 0 ? 0 : 1;
 }

@@ -4,7 +4,7 @@
   "description": "飞流 FeiLiu — concurrent segmented download manager (fork lineage: downloadx)",
   "type": "module",
   "license": "MIT",
-  "main": "desktop/main.mjs",
+  "main": "desktop/bootstrap.cjs",
   "bin": {
     "downloadx": "bin/downloadx.mjs"
   },
