@@ -66,7 +66,9 @@
       "!build/**/*",
       "build/icon.ico",
       "!release/**/*",
-      "mcp/**/*"
+      "mcp/**/*",
+      "!**/*-bak",
+      "!**/*.bak-*"
     ],
     "win": {
       "target": [

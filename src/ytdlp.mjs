@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 
 import { requestFollow, readBodyToFile, abortError } from "./net.mjs";
 import { SUBDIR as StoreSubdir } from "./store.mjs";
+import { ACTIVE } from "./task.mjs";
 import { mkdirWithRetry, sanitizeName } from "./util.mjs";
 
 /** What a user sees when yt-dlp is not installed and a page needs it. */
@@ -75,8 +76,14 @@ function ytDlpBinName() {
   return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
 }
 
-/** The release asset name for this platform, and the packaged root name. */
-function ytDlpAssetName() {
+/**
+ * The release asset name for this platform, and the packaged root name.
+ *
+ * Exported so the tests derive their expectations from it instead of
+ * hardcoding per-platform filenames (第6项:不要按平台写死 yt-dlp.exe /
+ * yt-dlp_linux); the body and every call site stay unchanged.
+ */
+export function ytDlpAssetName() {
   return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp_linux";
 }
 
@@ -86,7 +93,22 @@ let autoDownloadTried = false;
 let autoDownloadError = null;
 
 /**
- * Locate a yt-dlp executable, producing no side effects.
+ * X_OK probe for one candidate path.
+ *
+ * Node maps fs.constants.X_OK to plain existence (F_OK) on Windows and to the
+ * real execute permission on POSIX — exactly the split this module needs:
+ * on Windows every existing file "is executable", on POSIX the exec bit is
+ * judged honestly (the 2a self-heal in findYtDlp keys off this).
+ */
+async function executableOk(p) {
+  try { await fsp.access(p, fs.constants.X_OK); return true; } catch { return false; }
+}
+
+/**
+ * Locate a yt-dlp executable, producing no side effects except one: a
+ * candidate that exists but is not executable gets a one-time 0o755 heal
+ * (2a), so copies downloaded before the post-download chmod existed become
+ * usable without a manual delete.
  *
  * Order is fixed by the batch-8 spec: the caller's explicit setting
  * (config.ytdlpPath) first, then every PATH entry, then the app root. An
@@ -115,7 +137,18 @@ export async function findYtDlp(explicit) {
   // name above stays the documented form.
   if (process.platform !== "win32") candidates.push(path.join(root, "yt-dlp"));
   for (const c of candidates) {
-    try { if (existsSync(c)) { cachedPath = c; break; } } catch { /* keep looking */ }
+    try {
+      if (!existsSync(c)) continue;
+      // 2a 旧副本自愈:自动下载曾有不含执行位的落盘版本,一个"存在但不可
+      // 执行"的候选补一次 0o755 后重验,而不是把一个 spawn 必然 EACCES 的
+      // 路径交回给调用方。Windows 上 X_OK 退化为存在性检查(见下),这条
+      // 自愈路径只在 POSIX 上真正触发。
+      if (await executableOk(c)) { cachedPath = c; break; }
+      try {
+        await fsp.chmod(c, 0o755);
+        if (await executableOk(c)) { cachedPath = c; break; }
+      } catch { /* 无权修改或重验仍不过:继续找下一个候选 */ }
+    } catch { /* keep looking */ }
   }
   probed = true;
   return cachedPath;
@@ -213,6 +246,10 @@ export async function downloadYtDlp({ signal } = {}) {
     throw new Error("下载的 yt-dlp 文件只有 " + written + " B,不是有效二进制(" + url + ")");
   }
   await fsp.rename(tmp, dest);
+  // 2a:Linux 的 release 产物(PyInstaller ELF)不自带执行位,下载完成后补
+  // 0o755,否则 spawn 直接 EACCES。Windows 上 chmod 只能翻只读位,无害;
+  // 万一在怪异文件系统上失败,findYtDlp 的旧副本自愈会在下次探测时补上。
+  try { await fsp.chmod(dest, 0o755); } catch { /* 不可改权限:留给自愈兜底 */ }
   return dest;
 }
 
@@ -292,6 +329,53 @@ function killTree(pid) {
     try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
     resolve();
   });
+}
+
+/**
+ * 孤儿治理(第3项配套,纯函数):清理上一轮 daemon 崩溃时遗留的 detached
+ * yt-dlp/ffmpeg 子进程。
+ *
+ * detached 之后子进程不再随 daemon 退出而被带走,唯一的回收点是下一次启动:
+ * 每个委托子进程的 pid 都在 spawn 成功后写进了任务元数据(meta.ytdlpPid,
+ * 经 queue 的 write-temp-then-rename 落盘),本函数按记录回收。
+ *
+ * 只动"我们记录了 pid 且任务非运行态"的条目:
+ *   * meta.ytdlpPid 必须是正整数——这是本模块亲手 spawn 后记录的值;
+ *   * 任务状态不是 connecting/downloading——运行中的任务的子进程是它自己
+ *     的委托,归 AbortController 管不到这里;
+ * 探活用 kill(pid,0):ESRCH = 已死(只清字段),EPERM = 活着但非本用户,
+ * 也按活着处理。活着就杀:POSIX SIGKILL(经 killTree,连进程组一起),
+ * Windows taskkill /T /F。清理后删掉 meta.ytdlpPid 字段并返回报告;落盘由
+ * 调用方负责(daemon 启动钩子拿 queue.saveNow() 收尾)。
+ *
+ * @param {Iterable<object>} tasks 任务记录(通常 queue.tasks.values());
+ *   记录对象会被原地修改(删 meta.ytdlpPid)。
+ * @returns {Promise<{scanned:number, probed:number, killed:number[],
+ *                    cleared:Array<string|null>}>}
+ */
+export async function reconcileOrphans(tasks) {
+  const report = { scanned: 0, probed: 0, killed: [], cleared: [] };
+  const list = tasks instanceof Map ? [...tasks.values()]
+    : (tasks && typeof tasks[Symbol.iterator] === "function") ? [...tasks] : [];
+  for (const t of list) {
+    report.scanned++;
+    const pid = t?.meta?.ytdlpPid;
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (t?.status && ACTIVE.has(t.status)) continue;   // 运行中:不是孤儿
+    report.probed++;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; }
+    catch (err) { alive = err?.code === "EPERM"; }
+    if (alive) {
+      await killTree(pid);
+      report.killed.push(pid);
+    }
+    try {
+      if (t.meta && typeof t.meta === "object") delete t.meta.ytdlpPid;
+    } catch { /* 冻结对象:字段清不掉也不影响杀进程 */ }
+    report.cleared.push(t?.id ?? null);
+  }
+  return report;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +539,13 @@ export async function resolveMedia(binPath, url, { signal, timeoutMs = 60_000 } 
     let settled = false;
     let out = "";
     let errText = "";
-    const child = spawn(cmd, argv, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, argv, {
+      windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      // 第3项:detached 让子进程自成进程组——Linux 的 kill(-pid) 只对组长
+      // 有效,没有它杀树杀不到孙进程;Windows 走 taskkill /T(按父子关系
+      // 杀树),不需要 detached。
+      detached: process.platform !== "win32",
+    });
 
     const finish = (err, value) => {
       if (settled) return;
@@ -706,7 +796,25 @@ export async function runYtDlp({ downloader, task, controller, progressCb, resol
 
     await new Promise((resolve, reject) => {
       let settled = false;
-      const child = spawn(cmd, argv, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(cmd, argv, {
+        windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+        // 第3项:detached 让子进程自成进程组——Linux 的 kill(-pid) 只对
+        // 组长有效,没有它杀树杀不到孙进程;Windows 走 taskkill /T(按父子
+        // 关系杀树),不需要 detached。
+        detached: process.platform !== "win32",
+      });
+      // 第3项配套:spawn 成功后把 pid 记进任务元数据。落盘走 queue 的现有
+      // 持久化(apply → 400ms 防抖 save → write-temp-then-rename 写
+      // queue.json),daemon 崩溃后启动时的 reconcileOrphans 由此找到上一轮
+      // detached 的孤儿;任务到终态(完成/失败/取消)在下面的 finally 清字段。
+      try {
+        const q = downloader?.queue;
+        if (q && typeof q.apply === "function" && task?.id) {
+          q.apply(task.id, {
+            meta: { ...(q.get?.(task.id)?.meta || task.meta || {}), ytdlpPid: child.pid },
+          });
+        }
+      } catch { /* 元数据是尽力而为:不能因此打断下载 */ }
 
       const keep = (arr, chunk) => {
         for (const line of String(chunk).split(/\r?\n/)) {
@@ -856,6 +964,18 @@ export async function runYtDlp({ downloader, task, controller, progressCb, resol
       },
     };
   } finally {
+    // 第3项配套:任务到终态(完成/失败/取消)清 pid 字段。取消走
+    // queue.remove,任务已不在,get() 落空,自然跳过;这里删除的是活记录上
+    // 的字段,再经 apply 走现有 write-temp-then-rename 持久化。仍留着 pid 的
+    // 只有"daemon 本身崩了"一种情形——交给启动时的 reconcileOrphans。
+    try {
+      const q = downloader?.queue;
+      const live = q?.get?.(task?.id);
+      if (q && live?.meta && typeof live.meta === "object" && "ytdlpPid" in live.meta) {
+        delete live.meta.ytdlpPid;
+        q.apply(task.id, { meta: live.meta });
+      }
+    } catch { /* 元数据是尽力而为 */ }
     release();
   }
 }

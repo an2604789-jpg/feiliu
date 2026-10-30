@@ -276,7 +276,14 @@ async function main() {
   const { QueueManager } = await import("../src/queue.mjs");
   const { Downloader, detectKind } = await import("../src/downloader.mjs");
   const { ApiServer } = await import("../src/api.mjs");
-  const { findYtDlp, resetYtDlpCache, ensureYtDlp, resolveMedia, pickFormat, topFormats, parseYtdlpProgress } = await import("../src/ytdlp.mjs");
+  const { findYtDlp, resetYtDlpCache, ensureYtDlp, resolveMedia, pickFormat, topFormats, parseYtdlpProgress, ytDlpAssetName } = await import("../src/ytdlp.mjs");
+
+  // 第6项:产物名期望由导出的 ytDlpAssetName 派生,不按平台写死
+  // "yt-dlp.exe"/"yt-dlp_linux"。PATH 探测用的是环境二进制名(win32 上与
+  // 产物名相同;POSIX 上 findYtDlp 找 "yt-dlp",与 src/ytdlp.mjs 里那个
+  // 非 win32 的额外打包候选一致),所以这里也只保留这一个平台字面量。
+  const ASSET = ytDlpAssetName();
+  const AMBIENT = process.platform === "win32" ? ASSET : "yt-dlp";
 
   const config = new Config(path.join(home, "config.json"));
   await config.load();
@@ -388,9 +395,9 @@ async function main() {
       const dirR = path.join(home, "approot-r");
       const dirEmpty = path.join(home, "approot-empty");
       for (const d of [dirA, dirP, dirR, dirEmpty]) await fsp.mkdir(d, { recursive: true });
-      const inA = path.join(dirA, "yt-dlp.exe");
-      const inP = path.join(dirP, "yt-dlp.exe");
-      const inR = path.join(dirR, "yt-dlp.exe");
+      const inA = path.join(dirA, AMBIENT);
+      const inP = path.join(dirP, AMBIENT);
+      const inR = path.join(dirR, ASSET);
       await fsp.writeFile(inA, "fake", "utf8");
       await fsp.writeFile(inP, "fake", "utf8");
       await fsp.writeFile(inR, "fake", "utf8");
@@ -403,7 +410,7 @@ async function main() {
         assert.equal(await findYtDlp(inA), inA, "configured path must win");
         // 2. a BROKEN configured path keeps the spec's search order going.
         resetYtDlpCache();
-        assert.equal(await findYtDlp(path.join(home, "nope", "yt-dlp.exe")), inP,
+        assert.equal(await findYtDlp(path.join(home, "nope", AMBIENT)), inP,
           "a missing configured path must fall through to PATH");
         // 3. PATH beats the app root.
         resetYtDlpCache();
@@ -606,7 +613,7 @@ async function main() {
       await fsp.mkdir(emptyRoot, { recursive: true });
       process.env.PATH = "";
       process.env.DOWNLOADX_APPROOT = emptyRoot;
-      await config.set({ ytdlpPath: path.join(home, "nope", "yt-dlp.exe") });
+      await config.set({ ytdlpPath: path.join(home, "nope", AMBIENT) });
       try {
         resetYtDlpCache();
         const id = await addTask({ url: ORIGIN + "/gone" });
@@ -770,7 +777,7 @@ async function main() {
         resetYtDlpCache();
         assert.equal(await ensureYtDlp({ explicit: "", autoDownload: false }), null,
           "absent + opt-out means null");
-        assert.equal(origin.hits.get("/ytdlp-releases/yt-dlp.exe") || 0, 0,
+        assert.equal(origin.hits.get("/ytdlp-releases/" + ASSET) || 0, 0,
           "no download request may fire without the opt-in");
       } finally { restoreEnv(); resetYtDlpCache(); }
     });
@@ -783,12 +790,12 @@ async function main() {
       process.env.DOWNLOADX_YTDLP_RELEASE_BASE = ORIGIN + "/ytdlp-releases/";
       try {
         resetYtDlpCache();
-        const before = origin.hits.get("/ytdlp-releases/yt-dlp.exe") || 0;
+        const before = origin.hits.get("/ytdlp-releases/" + ASSET) || 0;
         const bin = await ensureYtDlp({ explicit: "", autoDownload: true });
-        assert.equal(bin, path.join(appRoot, "yt-dlp.exe"), "the asset name lands in the app root");
+        assert.equal(bin, path.join(appRoot, ASSET), "the asset name lands in the app root");
         const st = await fsp.stat(bin);
         assert.ok(st.size >= 1024, "a real-sized binary, not an error page");
-        assert.equal((origin.hits.get("/ytdlp-releases/yt-dlp.exe") || 0) - before, 1,
+        assert.equal((origin.hits.get("/ytdlp-releases/" + ASSET) || 0) - before, 1,
           "exactly one download request");
         const leftovers = (await fsp.readdir(appRoot)).filter((n) => n.endsWith(".tmp"));
         assert.equal(leftovers.length, 0, "no .tmp sibling left behind (write-temp-then-rename)");
@@ -805,16 +812,16 @@ async function main() {
       process.env.DOWNLOADX_YTDLP_RELEASE_BASE = ORIGIN + "/ytdlp-releases-missing/";
       try {
         resetYtDlpCache();
-        const before = origin.hits.get("/ytdlp-releases-missing/yt-dlp.exe") || 0;
+        const before = origin.hits.get("/ytdlp-releases-missing/" + ASSET) || 0;
         assert.equal(await ensureYtDlp({ explicit: "", autoDownload: true }), null, "404 release → null");
-        assert.equal((origin.hits.get("/ytdlp-releases-missing/yt-dlp.exe") || 0) - before, 1);
+        assert.equal((origin.hits.get("/ytdlp-releases-missing/" + ASSET) || 0) - before, 1);
         assert.equal(await ensureYtDlp({ explicit: "", autoDownload: true }), null,
           "the second call must not retry");
-        assert.equal((origin.hits.get("/ytdlp-releases-missing/yt-dlp.exe") || 0) - before, 1,
+        assert.equal((origin.hits.get("/ytdlp-releases-missing/" + ASSET) || 0) - before, 1,
           "still exactly one request: the failure is remembered");
         resetYtDlpCache();
         await ensureYtDlp({ explicit: "", autoDownload: true });
-        assert.equal((origin.hits.get("/ytdlp-releases-missing/yt-dlp.exe") || 0) - before, 2,
+        assert.equal((origin.hits.get("/ytdlp-releases-missing/" + ASSET) || 0) - before, 2,
           "the test seam reset unblocks a new attempt");
       } finally { restoreEnv(); resetYtDlpCache(); }
     });
@@ -828,12 +835,12 @@ async function main() {
       await config.set({ ytdlpPath: "", ytdlpAutoDownload: true });
       try {
         resetYtDlpCache();
-        const before = origin.hits.get("/ytdlp-releases/yt-dlp.exe") || 0;
+        const before = origin.hits.get("/ytdlp-releases/" + ASSET) || 0;
         const id = await addTask({ url: ORIGIN + "/gone" });
         const task = await waitError(id);
-        assert.equal((origin.hits.get("/ytdlp-releases/yt-dlp.exe") || 0) - before, 1,
+        assert.equal((origin.hits.get("/ytdlp-releases/" + ASSET) || 0) - before, 1,
           "the download fired exactly once from the task path");
-        const st = await fsp.stat(path.join(appRoot, "yt-dlp.exe")).catch(() => null);
+        const st = await fsp.stat(path.join(appRoot, ASSET)).catch(() => null);
         assert.ok(st && st.size >= 1024, "the binary landed in the app root");
         // The downloaded fixture bytes are not a runnable exe, so the resolve
         // stage fails honestly on top of the original 404.

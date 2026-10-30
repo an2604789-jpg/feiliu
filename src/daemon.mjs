@@ -17,6 +17,7 @@ import { CertificateAuthority } from "./ca.mjs";
 import { isExcepted } from "./rules.mjs";
 import { ApiServer } from "./api.mjs";
 import { UrlHistory } from "./history.mjs";
+import { reconcileOrphans } from "./ytdlp.mjs";
 import { ACTIVE } from "./task.mjs";
 import { VERSION } from "./version.mjs";
 
@@ -26,6 +27,23 @@ import { VERSION } from "./version.mjs";
  * are never held.
  */
 export const ASK_QUEUE_IDS = new Set(["extension", "clipboard"]);
+
+/**
+ * 回环地址判定(第10项,剪贴板来源专用):localhost、127.0.0.0/8、::1。
+ *
+ * 只看 host、不看 scheme;解析失败一律不算回环。刻意不做成"按地址一刀切":
+ * 本地 dev server、容器产物走回环是下载器的正当用法,只有剪贴板这个
+ * 无差别来源才按回环过滤(挂起路径与 manual/API 来源不拦)。
+ */
+export function isLoopbackUrl(url) {
+  let host = "";
+  try {
+    // WHATWG URL 对 IPv6 的 hostname 保留方括号("[::1]"),剥掉再比。
+    host = new URL(String(url || "")).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch { return false; }
+  if (host === "localhost" || host === "::1") return true;
+  return /^127(\.\d+){3}$/.test(host);
+}
 
 /**
  * How long the identity probe (P-19) waits for the recorded holder's
@@ -729,6 +747,21 @@ export class Daemon {
     this.queue = new QueueManager({ config: this.config });
     await this.queue.load();
 
+    // 第3项配套的启动钩子:上一轮 detached 的 yt-dlp/ffmpeg 子进程不再随
+    // daemon 崩溃被带走,这里按任务里记录的 pid 探活清理一次(只动"记录了
+    // pid 且任务非运行态"的条目),再把清掉的字段落盘。放在 Downloader/API
+    // 起来之前,新任务还没机会派生新的外部进程。
+    try {
+      const orphanReport = await reconcileOrphans(this.queue.tasks.values());
+      if (orphanReport.probed > 0) {
+        this.log.info("启动孤儿清理: 探测 " + orphanReport.probed + " 个记录的 pid, 结束 " +
+          orphanReport.killed.length + " 个, 清理字段 " + orphanReport.cleared.length + " 条");
+        await this.queue.saveNow().catch((err) => this.log.warn("孤儿清理落盘失败: " + err.message));
+      }
+    } catch (err) {
+      this.log.warn("孤儿清理失败: " + ((err && err.message) || err));
+    }
+
     // URL history is loaded before the API starts so the first request already
     // sees the previous session's entries.
     this.history = new UrlHistory();
@@ -787,11 +820,18 @@ export class Daemon {
         // With ask-before-add on, a copied URL waits for confirmation rather
         // than entering the queue unseen (see PendingManager). The config is
         // read here, live, so toggling the setting takes effect at once.
+        const queueId = "clipboard";
         if (this.pending.enabled) {
-          this.pending.add({ url, queueId: "clipboard", tags: ["clipboard"] });
+          this.pending.add({ url, queueId, tags: ["clipboard"] });
           this.log.info("clipboard: pending approval for " + url);
+        } else if (queueId === "clipboard" && isLoopbackUrl(url)) {
+          // 第10项:剪贴板桥曾把回环地址(http://127.0.0.1:8045/…)灌进
+          // 队列、全部 401。只过滤 clipboard 这个无差别来源,且只在"未挂起"
+          // 分支拦——挂起路径(pending)有人审,manual/API 来源的回环是
+          // 本地服务的正当用法,都不在这里碰。
+          this.log.info("剪贴板回环地址已跳过: " + url);
         } else {
-          this.queue.add({ url, queueId: "clipboard", tags: ["clipboard"] });
+          this.queue.add({ url, queueId, tags: ["clipboard"] });
           this.log.info("clipboard: queued " + url);
         }
       } catch (err) {

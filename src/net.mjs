@@ -448,7 +448,6 @@ function httpsOverTunnel(rawSocket, u, port, headerBag, method, insecure, tlsOpt
     path: u.pathname + u.search,
     method,
     headers: headerBag,
-    agent: false,
     createConnection: () => tlsSocket,
     rejectUnauthorized: !insecure,
   });
@@ -518,7 +517,6 @@ function dispatchOnce(url, opts, tlsOpts) {
               path: u.pathname + u.search,
               method: opts.method,
               headers: headerBag,
-              agent: false,
               createConnection: () => socket,
             });
             req.once("response", finish(handle));

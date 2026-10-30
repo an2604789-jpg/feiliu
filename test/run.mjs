@@ -136,6 +136,11 @@ const BATCH8_SUITES = [
 // suite locks the relaunch decision, the entry wiring and the fail-loud log.
 const BATCH9_SUITES = [
   "desktop-bootstrap.mjs",
+  // 批-9 修复批(2026-10-31):代理隧道 agent:false 移除的 e2e 守卫(batch9-net),
+  // 引擎四项(chmod 自愈/杀树与孤儿/剪贴板回环/打包排除)的回归(batch9-engine)。
+  // batch9-rate.mjs 是一次性限速实测留档,220MB 跑约 2 分钟,不进常规全量。
+  "batch9-net.mjs",
+  "batch9-engine.mjs",
 ];
 
 /** Run one regression suite file as a child process; resolve its exit code. */
