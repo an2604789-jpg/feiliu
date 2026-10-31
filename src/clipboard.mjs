@@ -12,8 +12,12 @@ const URL_RE = /^(https?|ftp):\/\/\S+$/i;
 function readClipboard() {
   return new Promise((resolve) => {
     if (process.platform !== "win32") { resolve(""); return; }
+    // -Raw alone, not "-Raw -Format Text": PowerShell 7 (what this machine's
+    // PATH serves as powershell.exe, 7.6.6) dropped -Format, so the old
+    // argument list failed on every single poll and the watcher sat silent
+    // forever (err was swallowed into ""). -Raw works on 5.1 and 7.x alike.
     execFile("powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw -Format Text"],
+      ["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"],
       { timeout: 4000, windowsHide: true },
       (err, stdout) => resolve(err ? "" : String(stdout || "").trim()));
   });

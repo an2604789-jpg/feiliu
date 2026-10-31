@@ -18,9 +18,13 @@
 //        with a live pid loses the process and the field, and the cleanup
 //        is persisted back to queue.json;
 //   (第10项) the clipboard handler skips loopback URLs (localhost /
-//        127.0.0.0/8 / ::1) only in the not-pending else branch; with
-//        ask-before-add on, a loopback URL still goes to the pending pen
-//        (现状防回归); manual adds are never filtered — a loopback URL from
+//        127.0.0.0/8 / ::1) in EVERY branch — pending included, because the
+//        pen auto-queues on its 5-minute timeout, so a held loopback URL
+//        would still end up a failed 401 task (the original incident);
+//        the API path the desktop bridge actually uses refuses clipboard
+//        loopback POSTs with 422 and holds normal clipboard adds in the pen
+//        when ask-before-add is on (the bridge used to queue.add straight
+//        past it); manual adds are never filtered — a loopback URL from
 //        a non-clipboard source still enters the queue (local dev servers
 //        are legitimate); a normal clipboard URL still queues;
 //   (第11项) build.files carries "!**/*-bak" and "!**/*.bak-*", and no
@@ -324,15 +328,20 @@ async function main() {
       try { daemon.pending.dispose(); } catch { /* down */ }
     }
 
-    await suite.test("pending enabled: clipboard loopback still goes to the pen (现状防回归)", async () => {
+    await suite.test("pending enabled: clipboard loopback is skipped too (the pen's 5-min timeout would auto-queue it)", async () => {
       const home = await fsp.mkdtemp(path.join(os.tmpdir(), "downloadx-b9-clip-a-"));
       let daemon = null;
       try {
         daemon = await makeDaemon(home, { askBeforeAdd: true });
         daemon.clipboard.emit("url", "http://127.0.0.1:8045/v1/files?h=1");
-        hassert.equal(daemon.pending.list().length, 1, "the loopback URL waits in the pending pen");
+        hassert.equal(daemon.pending.list().length, 0, "the loopback URL must not even reach the pen");
+        hassert.equal(daemon.queue.tasks.size, 0, "and never the queue");
+        hassert.ok(daemon.log.tailLines(50).some((l) => l.includes("剪贴板回环地址已跳过: http://127.0.0.1:8045/v1/files?h=1")),
+          "the skip must be logged verbatim");
+        // ask-before-add 语义对正常 URL 不变:照旧挂起等批准。
+        daemon.clipboard.emit("url", "https://example.com/video.mp4?h=1b");
+        hassert.equal(daemon.pending.list().length, 1, "a normal clipboard URL still goes to the pen");
         hassert.equal(daemon.pending.list()[0].queueId, "clipboard");
-        hassert.equal(daemon.queue.tasks.size, 0, "nothing enters the queue behind ask-before-add");
       } finally {
         if (daemon) await teardownDaemon(daemon);
         restoreEnv();
@@ -375,6 +384,63 @@ async function main() {
         // And the clipboard handler is still the one skipping its own source:
         daemon.clipboard.emit("url", "http://localhost:8045/v2?h=4");
         hassert.equal(daemon.queue.tasks.size, 1, "clipboard loopback still skipped beside it");
+      } finally {
+        if (daemon) await teardownDaemon(daemon);
+        restoreEnv();
+        await fsp.rm(home, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    // --------------------------------- 第10项(收口加固): API/桥路径
+    suite.group("第10项收口: API 层(desktop 桥的真实路径)");
+
+    /** POST /api/tasks against the fixture daemon's real HTTP listener.
+     *  Daemon.init() skips api.listen() in this fixture (no server), so the
+     *  cases start it themselves on an ephemeral port, like production does. */
+    async function postTask(daemon, payload) {
+      if (!daemon.api.server) {
+        await daemon.api.listen({ port: 0 });
+        // The suite must exit cleanly: no handle of ours may hold the event loop.
+        daemon.api.server.unref();
+      }
+      const res = await fetch("http://127.0.0.1:" + daemon.api.port + "/api/tasks", {
+        method: "POST",
+        headers: { "x-downloadx-token": daemon.api.token, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return { status: res.status, body: await res.json() };
+    }
+
+    await suite.test("API: clipboard loopback POST is refused with 422, even with ask-before-add on", async () => {
+      const home = await fsp.mkdtemp(path.join(os.tmpdir(), "downloadx-b9-clip-api-"));
+      let daemon = null;
+      try {
+        daemon = await makeDaemon(home, { askBeforeAdd: true });
+        const loop = await postTask(daemon, { url: "http://localhost:8045/v1", queueId: "clipboard" });
+        hassert.equal(loop.status, 422, "the clipboard loopback POST must be refused");
+        hassert.equal(daemon.queue.tasks.size, 0, "nothing queued");
+        hassert.equal(daemon.pending.list().length, 0, "and nothing held in the pen either");
+        // 显式来源不受影响:manual 回环照常入队(正当用法)。
+        const manual = await postTask(daemon, { url: "http://127.0.0.1:9999/asset.bin", queueId: "default" });
+        hassert.ok(manual.status === 200 || manual.status === 201, "manual loopback still queues, got " + manual.status);
+        hassert.equal(daemon.queue.tasks.size, 1, "the manual add landed");
+      } finally {
+        if (daemon) await teardownDaemon(daemon);
+        restoreEnv();
+        await fsp.rm(home, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    await suite.test("API: a normal clipboard URL waits in the pen when ask-before-add is on (the bridge no longer bypasses it)", async () => {
+      const home = await fsp.mkdtemp(path.join(os.tmpdir(), "downloadx-b9-clip-api2-"));
+      let daemon = null;
+      try {
+        daemon = await makeDaemon(home, { askBeforeAdd: true });
+        const res = await postTask(daemon, { url: "https://example.com/video.mp4?via=bridge", queueId: "clipboard" });
+        hassert.equal(res.status, 202, "the clipboard add must be held like the extension's");
+        hassert.ok(res.body.pending, "the response carries the pending view");
+        hassert.equal(daemon.queue.tasks.size, 0, "nothing enters the queue unseen");
+        hassert.equal(daemon.pending.list()[0].url, "https://example.com/video.mp4?via=bridge");
       } finally {
         if (daemon) await teardownDaemon(daemon);
         restoreEnv();

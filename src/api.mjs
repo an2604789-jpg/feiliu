@@ -11,6 +11,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { paths } from "./paths.mjs";
 import { taskView, STATUS } from "./task.mjs";
 import { isExcepted } from "./rules.mjs";
+import { isLoopbackUrl } from "./util.mjs";
 import { TransferStore, STAGING_SUFFIX } from "./store.mjs";
 import { VERSION } from "./version.mjs";
 // The MCP tool layer is pure (handleMessage owns no state and starts no stdio
@@ -500,6 +501,14 @@ export class ApiServer {
       if (p === "/api/tasks" && req.method === "POST") {
         const url2 = String(body.url ?? "").trim();
         if (!url2) return json(res, 400, { error: "url is required" });
+        // 第10项(收口加固):剪贴板来源的回环地址直接拒绝,挂起也不进——
+        // 挂起 5 分钟超时会自动入队,不批准也挡不住 401 失败任务。这是
+        // desktop 桥唯一会经过的入口(watcher 路径在 daemon.mjs 同源判定),
+        // 与其语义保持一致:manual/API 显式来源不受影响(本地服务是正当
+        // 用法),watcher 不经过这里。
+        if (body.queueId === "clipboard" && isLoopbackUrl(url2)) {
+          return json(res, 422, { error: "clipboard source refuses loopback URLs (add it manually if you meant it)" });
+        }
         // Same-URL in-flight guard: a URL that is already queued, connecting,
         // downloading or paused is refused with the existing task's id so the
         // client can point the user at it. Error and complete do not count —
@@ -513,10 +522,15 @@ export class ApiServer {
         if (live) {
           return json(res, 409, { error: "task already in queue", existingTaskId: live.id });
         }
-        // askBeforeAdd: extension-sourced adds wait for an explicit approve
-        // (with optional dir/filename/category overrides) instead of entering
-        // the queue. Manual adds keep the old direct path.
-        if (this.pending && this.pending.enabled && body.queueId === EXTENSION_QUEUE_ID) {
+        // askBeforeAdd: extension- and clipboard-sourced adds wait for an
+        // explicit approve (with optional dir/filename/category overrides)
+        // instead of entering the queue — the comment above always claimed
+        // "these adds", but the code only ever matched the extension, so the
+        // desktop clipboard bridge (P-25) bypassed the pen entirely and
+        // queue.add'ed straight away (the 401×3 loopback incident). Manual
+        // adds keep the old direct path.
+        if (this.pending && this.pending.enabled &&
+            (body.queueId === EXTENSION_QUEUE_ID || body.queueId === "clipboard")) {
           const rec = this.pending.add({
             url: url2,
             filename: body.filename,

@@ -192,3 +192,21 @@ export function backoffDelay(attempt, baseMs = 500, capMs = 30_000) {
   const raw = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt - 1));
   return Math.round(raw * (0.7 + Math.random() * 0.6));
 }
+
+/**
+ * 回环地址判定(剪贴板来源专用):localhost、127.0.0.0/8、::1。
+ *
+ * 只看 host、不看 scheme;解析失败一律不算回环。刻意不做成"按地址一刀切":
+ * 本地 dev server、容器产物走回环是下载器的正当用法,只有剪贴板这个
+ * 无差别来源才按回环过滤(watcher、desktop 桥与 API 三条路径共用这里,
+ * manual/API 显式来源不拦)。收口批-9 时从 daemon.mjs 挪来共用。
+ */
+export function isLoopbackUrl(url) {
+  let host = "";
+  try {
+    // WHATWG URL 对 IPv6 的 hostname 保留方括号("[::1]"),剥掉再比。
+    host = new URL(String(url || "")).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch { return false; }
+  if (host === "localhost" || host === "::1") return true;
+  return /^127(\.\d+){3}$/.test(host);
+}

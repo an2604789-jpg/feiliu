@@ -30,20 +30,11 @@ export const ASK_QUEUE_IDS = new Set(["extension", "clipboard"]);
 
 /**
  * 回环地址判定(第10项,剪贴板来源专用):localhost、127.0.0.0/8、::1。
- *
- * 只看 host、不看 scheme;解析失败一律不算回环。刻意不做成"按地址一刀切":
- * 本地 dev server、容器产物走回环是下载器的正当用法,只有剪贴板这个
- * 无差别来源才按回环过滤(挂起路径与 manual/API 来源不拦)。
+ * 实现与完整注释在 util.mjs——watcher、desktop 桥与 API 三条路径共用
+ * 同一实现,语义不分叉。此处 re-export 保持既有 import 路径不变。
  */
-export function isLoopbackUrl(url) {
-  let host = "";
-  try {
-    // WHATWG URL 对 IPv6 的 hostname 保留方括号("[::1]"),剥掉再比。
-    host = new URL(String(url || "")).hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  } catch { return false; }
-  if (host === "localhost" || host === "::1") return true;
-  return /^127(\.\d+){3}$/.test(host);
-}
+import { isLoopbackUrl } from "./util.mjs";
+export { isLoopbackUrl };
 
 /**
  * How long the identity probe (P-19) waits for the recorded holder's
@@ -821,15 +812,17 @@ export class Daemon {
         // than entering the queue unseen (see PendingManager). The config is
         // read here, live, so toggling the setting takes effect at once.
         const queueId = "clipboard";
+        // 第10项(收口加固):剪贴板回环一律不自动入队,挂起也不进——
+        // 挂起 5 分钟超时会自动入队("pending: timeout -> queued" 通路,
+        // egoliteSetup 日志实锤过),只拦"未挂起"分支挡不住 401×3 那样的
+        // 完整旅程。manual/API 显式来源的回环是正当用法,都不在这里碰。
+        if (isLoopbackUrl(url)) {
+          this.log.info("剪贴板回环地址已跳过: " + url);
+          return;
+        }
         if (this.pending.enabled) {
           this.pending.add({ url, queueId, tags: ["clipboard"] });
           this.log.info("clipboard: pending approval for " + url);
-        } else if (queueId === "clipboard" && isLoopbackUrl(url)) {
-          // 第10项:剪贴板桥曾把回环地址(http://127.0.0.1:8045/…)灌进
-          // 队列、全部 401。只过滤 clipboard 这个无差别来源,且只在"未挂起"
-          // 分支拦——挂起路径(pending)有人审,manual/API 来源的回环是
-          // 本地服务的正当用法,都不在这里碰。
-          this.log.info("剪贴板回环地址已跳过: " + url);
         } else {
           this.queue.add({ url, queueId, tags: ["clipboard"] });
           this.log.info("clipboard: queued " + url);

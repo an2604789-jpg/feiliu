@@ -630,7 +630,23 @@ const CLIPBOARD_URL_RE = /^(https?|ftp):\/\/\S+$/i;
 const CLIPBOARD_POLL_MS = 1500;
 
 /**
+ * 回环地址判定（第10项收口加固，与 src/util.mjs 的 isLoopbackUrl 语义一致）。
+ * 桌面桥不 import src（避免把 daemon 拉进 GUI 进程），故在此本地实现；
+ * batch8-bridge 用例钉住两边 host 集一致（localhost / 127.0.0.0/8 / ::1）。
+ */
+function isLoopbackCandidate(u) {
+  let host = "";
+  try {
+    host = new URL(String(u || "")).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch { return false; }
+  if (host === "localhost" || host === "::1") return true;
+  return /^127(\.\d+){3}$/.test(host);
+}
+
+/**
  * 一次剪贴板轮询的决策（纯函数，回归套件直接测）。
+ * 回环 URL 一律不投递（post:null）——API 侧还有同源守卫兜底（api.mjs 422），
+ * 这里是源头第一道：本地 dev server 链接不该一复制就变成下载任务。
  * @param {string} text 本次读到的剪贴板全文
  * @param {string} last 上次记录的全文
  * @returns {{ post: string|null, nextLast: string }}
@@ -640,7 +656,7 @@ function planClipboardPoll(text, last) {
   const prev = typeof last === "string" ? last : "";
   if (!t || t === prev) return { post: null, nextLast: prev };
   const candidate = (t.split(/\r?\n/)[0] || "").trim();
-  const post = CLIPBOARD_URL_RE.test(candidate) ? candidate : null;
+  const post = CLIPBOARD_URL_RE.test(candidate) && !isLoopbackCandidate(candidate) ? candidate : null;
   return { post, nextLast: t };
 }
 // [clipboard-bridge-pure] end

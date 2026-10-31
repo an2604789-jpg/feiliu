@@ -47,6 +47,7 @@ import path from "node:path";
 import process from "node:process";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { isLoopbackUrl as isLoopbackRef } from "../src/util.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -370,7 +371,7 @@ const bridgeMatch = MAIN_SRC.match(/\/\/ \[clipboard-bridge-pure\] begin[^\n]*\r
 const bridge = bridgeMatch
   ? new Function(
     bridgeMatch[1] +
-    "\nreturn { CLIPBOARD_URL_RE, CLIPBOARD_POLL_MS, planClipboardPoll };",
+    "\nreturn { CLIPBOARD_URL_RE, CLIPBOARD_POLL_MS, planClipboardPoll, isLoopbackCandidate };",
   )()
   : null;
 
@@ -425,6 +426,22 @@ async function desktopTests() {
     assert.equal(bridge.planClipboardPoll("FTP://a/5", "").post, "FTP://a/5", "http/https/ftp, case-insensitive");
     assert.equal(bridge.planClipboardPoll("javascript:alert(1)", "").post, null, "non-(http|https|ftp) schemes are refused");
     assert.equal(bridge.planClipboardPoll("https://", "").post, null, "scheme alone is not a URL");
+  });
+
+  await test("loopback URLs are never posted (第10项收口: same host set as util.mjs's isLoopbackUrl)", () => {
+    for (const bad of ["http://127.0.0.1:8045/v1/files", "http://localhost:3000/", "http://[::1]:9/x",
+      "http://127.127.0.5/a.zip", "HTTPS://LOCALHOST/up.bin"]) {
+      const r = bridge.planClipboardPoll(bad, "");
+      assert.equal(r.post, null, "must not post " + bad);
+      assert.notEqual(r.nextLast, "", "last still advances so the skip is not re-litigated forever");
+      assert.ok(bridge.isLoopbackCandidate(bad), "isLoopbackCandidate agrees on " + bad);
+    }
+    for (const good of ["https://example.com/video.mp4", "http://192.168.1.10/a.zip", "ftp://files.lan/x"]) {
+      assert.equal(bridge.isLoopbackCandidate(good), false, "isLoopbackCandidate must not overmatch " + good);
+    }
+    // 语义钉:与 src/util.mjs 的判定对每一个样例输入结论一致。
+    assert.equal(bridge.isLoopbackCandidate("http://127.0.0.1:1/"), isLoopbackRef("http://127.0.0.1:1/"));
+    assert.equal(bridge.isLoopbackCandidate("https://example.com/"), isLoopbackRef("https://example.com/"));
   });
 
   group("P-25 wiring (source-level, batch3-style assertions on the real files)");
