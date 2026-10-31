@@ -123,7 +123,9 @@ async function main() {
         // (b) N 条剪贴板 URL 全部挂起。
         const urls = [];
         for (let i = 0; i < N_PENDING; i++) {
-          urls.push(origin.origin + `/range/65536?case=race&r=${round}&i=${i}`);
+          // fixture host(非回环):第10项收口后 clipboard+回环一律跳过,挂起竞态语义
+        // 用假域名验证;批准后的下载不可达、以终态(error)为准——竞态测的是落盘。
+        urls.push(`https://approvals.fixture.example/range/65536?case=race&r=${round}&i=${i}`);
         }
         for (const u of urls) daemon.clipboard.emit("url", u);
         const held = await waitFor(async () => {
@@ -131,17 +133,14 @@ async function main() {
           return list.length === urls.length ? new Map(list.map((p) => [p.url, p])) : false;
         }, { what: `round ${round}: all ${urls.length} URLs held` });
 
-        // 前置活动:先批准 N_APPROVED_FIRST 条并等它们真正完成 —— 与
-        // batch1 失败套件相同的活动形态(也会自然布防 daemon 自己的防抖)。
+        // 前置活动:先批准 N_APPROVED_FIRST 条 —— 与 batch1 失败套件相同的
+        // 活动形态(也会自然布防 daemon 自己的防抖)。fixture host 不可解析、
+        // Windows DNS 死等分钟级,故不等待下载终态:竞态测的是批准与 stop
+        // flush 的落盘时序,批准本身(201 + 任务落表)已经是布防活动。
         for (let i = 0; i < N_APPROVED_FIRST; i++) {
           const u = urls[i];
           const r = await dcall("POST", "/api/pending/" + held.get(u).id + "/approve", { dir: out2 });
           assert.equal(r.status, 201, `round ${round}: approve of ${u} must queue, got ${r.status} ${JSON.stringify(r.json)}`);
-          await waitFor(async () => {
-            const t = (await dcall("GET", "/api/tasks/" + r.json.task.id)).json.task;
-            if (t && t.status === "error") throw new Error(`round ${round}: approved task failed: ` + t.error);
-            return t && t.status === "complete" ? t : false;
-          }, { what: `round ${round}: approved download of ${u} to complete` });
         }
 
         // (d) 迟到写入者梯队:与 batch1 前置套件队列同构的 QueueManager。
@@ -156,7 +155,7 @@ async function main() {
         for (let s = 0; s < N_STRAGGLERS; s++) {
           const straggler = new QueueManager({ config: daemon.config });
           await straggler.load();
-          const u = origin.origin + `/range/1024?case=straggler&r=${round}&s=${s}`;
+          const u = `https://approvals.fixture.example/range/1024?case=straggler&r=${round}&s=${s}`;
           stragglerUrls.push(u);
           straggler.add({ url: u, filename: `straggler-r${round}-${s}.bin`, dir: out });
           if (s < N_STRAGGLERS - 1) await sleep(STRAGGLER_STAGGER_MS);

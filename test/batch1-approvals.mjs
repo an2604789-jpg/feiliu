@@ -395,7 +395,10 @@ async function main() {
         };
 
         // The exact event ClipboardWatcher emits on a copied URL.
-        const clipUrl = origin.origin + "/range/65536?case=clipboard";
+        // 第10项收口后 clipboard+回环一律跳过(挂起也进不去),而 fake server 只能在
+        // 127.0.0.1——挂起/批准/落盘接线改用非回环 fixture host 验证;批准后这条
+        // URL 不可达,下载成功语义由 approve-overrides 用例(manual 来源,可达)覆盖。
+        const clipUrl = "https://clipboard.fixture.example/range/65536?case=clipboard";
         daemon.clipboard.emit("url", clipUrl);
 
         const heldClip = await waitFor(async () => {
@@ -409,16 +412,16 @@ async function main() {
 
         const approved = await dcall("POST", "/api/pending/" + heldClip.id + "/approve", { dir: out2 });
         assert.equal(approved.status, 201, "expected 201, got " + approved.status + " " + JSON.stringify(approved.json));
-        const clipDone = await waitFor(async () => {
-          const t = (await dcall("GET", "/api/tasks/" + approved.json.task.id)).json.task;
-          if (t && t.status === "error") throw new Error("clipboard task failed: " + t.error);
-          return t && t.status === "complete" ? t : false;
-        }, { what: "the approved clipboard download to complete" });
-        assert.equal(clipDone.dir, out2);
+        // fixture host 不可解析(且 Windows DNS 死等分钟级):批准→入队的接线
+        // 到此已证,下载生命周期不归本用例管(approve-overrides 用例以可达 URL
+        // 覆盖了"批准后真实落盘")。
+        const clipTask = (await dcall("GET", "/api/tasks/" + approved.json.task.id)).json.task;
+        assert.ok(clipTask, "approving the held entry must create its task");
+        assert.equal(clipTask.dir, out2);
 
         // Still-pending entries must be flushed into the queue by stop(),
         // not dropped: a restart may not silently lose a copied link.
-        const flushUrl = origin.origin + "/range/65536?case=flushme";
+        const flushUrl = "https://clipboard.fixture.example/range/65536?case=flushme";
         daemon.clipboard.emit("url", flushUrl);
         await waitFor(async () => {
           const list = (await dcall("GET", "/api/pending")).json.pending;
