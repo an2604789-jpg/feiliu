@@ -30,4 +30,14 @@ contextBridge.exposeInMainWorld("downloadx", {
 
   /** 在资源管理器中打开日志所在目录（启动失败诊断用）。 */
   revealLog: () => ipcRenderer.invoke("shell:revealLog"),
+
+  /**
+   * 任务卡右键菜单（批-10）：传入 { status }，主进程按状态构建原生菜单并
+   * 弹出，返回被点击的动作名（无点击/菜单关闭返回 null）。动作名与 GUI 行内
+   * 按钮 data-a 一致，由渲染进程回放到 onAction 单一入口。
+   * @param {{ status: string }} info
+   * @returns {Promise<string|null>}
+   */
+  taskActions: (info) => ipcRenderer.invoke("menu:taskActions", info && typeof info === "object"
+    ? { status: String(info.status ?? "") } : { status: "" }),
 });

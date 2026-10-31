@@ -1116,3 +1116,64 @@ ipcMain.handle("shell:revealLog", async () => {
   }
   return { ok: true };
 });
+
+// [task-menu-fallback] begin
+// gui/index.html [ui-pure] 段 taskMenuItems 的同语义兜底副本:仅当运行期从
+// gui/index.html 提取该段失败(文件缺失/标记丢失)时才启用。两侧语义由
+// test/batch10-ui.mjs 用同一批状态逐项比对钉死,改任一侧必须同步另一侧。
+function taskMenuItemsFallback(status){
+  const items = [];
+  if (status==="downloading" || status==="connecting" || status==="queued") items.push({ action:"pause", label:"暂停" });
+  if (status==="paused") items.push({ action:"start", label:"继续" });
+  if (status==="error") items.push({ action:"retry", label:"重试" });
+  if (status!=="complete") items.push({ action:"cancel", label:"取消" });
+  if (status==="complete"){
+    items.push({ action:"openFile", label:"打开文件" });
+    items.push({ action:"showFolder", label:"打开文件夹" });
+  }
+  items.push({ action:"copyLink", label:"复制下载链接" });
+  items.push({ action:"remove", label:"删除" });
+  return items;
+}
+// [task-menu-fallback] end
+
+// 运行期从 gui/index.html 提取 [ui-pure] 段求值(菜单可见性的唯一权威实现)。
+// 失败不致命:回退到上面的同语义兜底副本,右键菜单照常可用。
+let taskMenuItems = null;
+function loadTaskMenuItems() {
+  try {
+    const html = fs.readFileSync(path.join(__dirname, "..", "gui", "index.html"), "utf8");
+    const m = /\/\/ \[ui-pure\] begin[^\n]*\r?\n([\s\S]*?)\/\/ \[ui-pure\] end/.exec(html);
+    if (!m) throw new Error("找不到 [ui-pure] 标记段");
+    const fn = new Function(m[1] + "\n;return taskMenuItems;")();
+    if (typeof fn !== "function") throw new Error("[ui-pure] 段求值结果不是函数");
+    taskMenuItems = fn;
+    logLaunch("taskMenu: [ui-pure] taskMenuItems loaded from gui/index.html");
+  } catch (err) {
+    taskMenuItems = null;
+    logLaunch("taskMenu: [ui-pure] 提取失败，使用内置兜底副本：" + ((err && err.message) || err));
+  }
+}
+loadTaskMenuItems();
+
+// 任务卡右键菜单(批-10):渲染进程只发上下文 { status },Electron Menu 在主进程
+// 构建;点击回传动作名(GUI onAction 的动作名),关闭未点则回 null。
+ipcMain.handle("menu:taskActions", async (_event, info) => {
+  const status = info && typeof info === "object" && typeof info.status === "string" ? info.status : "";
+  const build = taskMenuItems || taskMenuItemsFallback;
+  const items = build(status);
+  if (!items || !items.length) return null;
+  let clicked = null;
+  const menu = Menu.buildFromTemplate(items.map((it) => ({
+    label: String(it.label || ""),
+    click: () => { clicked = String(it.action || ""); },
+  })));
+  await new Promise((resolve) => {
+    try {
+      menu.popup({ window: mainWindow || undefined, callback: resolve });
+    } catch {
+      resolve();   // 无窗口可附着等异常:不当场炸,按“未点击”处理
+    }
+  });
+  return clicked;
+});

@@ -14,8 +14,10 @@
 
 import process from "node:process";
 import fsp from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFile as execFileCb, spawn } from "node:child_process";
 
 import { paths } from "../src/paths.mjs";
 
@@ -144,6 +146,142 @@ async function daemonCall(method, route, body) {
   return payload;
 }
 
+// ============================================================================
+// focus-app 兜底拉起（批-10，用户实测痛点：通知点击没反应）
+//
+// 原链路：扩展 notifyTakeover 点击 → focus-app → 写 <数据根>/focus.show →
+// desktop/main.mjs 每 700ms 轮询消费并拉窗。断点：GUI/桌面壳没运行时没人消费
+// 这个文件，用户点了通知就石沉大海。修法：写完信号先短等待轮询它是否已被
+// 消费；超时仍在即判定 desktop 未运行，从注册表/默认安装路径定位“已安装的”
+// 飞流 GUI 拉起（detached + stdio ignore + --no-sandbox——本机未签名 Electron
+// 必须），focus.show 原样留在盘上，留给 GUI 启动后的消费轮询接手。
+// ============================================================================
+
+/** 产品名（与 package.json build.productName 一致；NSIS 安装的 exe 名同它）。 */
+export const GUI_EXE_NAME = "飞流下载器.exe";
+/** 注册表 DisplayName / 安装目录名 / exe 文件名的匹配规则。 */
+export const GUI_NAME_RE = /feiliu|飞流/i;
+
+/** desktop 消费 focus.show 的最长等待与轮询步长（desktop 侧轮询周期 700ms）。 */
+export const FOCUS_CONSUME_WAIT_MS = 3000;
+export const FOCUS_CONSUME_POLL_MS = 250;
+
+/**
+ * 纯逻辑：%LOCALAPPDATA%\Programs 下的目录名里挑出飞流的安装目录。
+ * 目录名来自 fsp.readdir（Unicode 安全，不受控制台代码页影响）。
+ * @param {string[]} names
+ */
+export function pickInstalledGuiDir(names) {
+  return (names || []).find((n) => GUI_NAME_RE.test(String(n))) || null;
+}
+
+function fileExists(p) {
+  try { return !!p && fsSync.existsSync(p); } catch { return false; }
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function execFile(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFileCb(cmd, args, { encoding: "buffer", windowsHide: true }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout);
+    });
+  });
+}
+
+/**
+ * reg.exe 输出的是控制台代码页（中文 Windows 为 GBK）而非 UTF-8；按 utf8 解码
+ * 会把“飞流”变乱文导致永远匹配不上。优先用 GBK 解码，小 ICU 构建不支持时
+ * 退回 utf8（此时退路是 LOCALAPPDATA 扫描，路径来自 readdir，不受影响）。
+ */
+/** 导出供回归：GBK 字节样例 → “飞流下载器” 的解码钉子（test/batch10-ui.mjs）。 */
+export function decodeConsoleOutput(buf) {
+  try { return new TextDecoder("gbk").decode(buf); }
+  catch { return buf.toString("utf8"); }
+}
+
+/** reg query 子键枚举（输出按控制台代码页解码）。导出供诊断/探针复用。 */
+export async function regQuerySubkeys(key) {
+  const out = decodeConsoleOutput(await execFile("reg", ["query", key]));
+  return out.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("HKEY_"));
+}
+
+/** reg query 单值读取；值不存在或键不可读返回 null。导出供诊断/探针复用。 */
+export async function regQueryValue(key, name) {
+  try {
+    const out = decodeConsoleOutput(await execFile("reg", ["query", key, "/v", name]));
+    const line = out.split(/\r?\n/).find((l) => l.includes(name) && l.includes("REG_"));
+    if (!line) return null;
+    const parts = line.trim().split(/\s{2,}/);
+    return (parts[parts.length - 1] || "").trim() || null;
+  } catch { return null; }   // 值不存在时 reg 退出码非 0，属正常
+}
+
+/**
+ * 定位已安装的飞流 GUI exe；找不到返回 null（保持现行为）。
+ * 先查 HKCU 卸载表（electron-builder NSIS 写在 per-user 键下），再兜底扫
+ * %LOCALAPPDATA%\Programs。
+ */
+export async function locateInstalledGuiExe() {
+  if (process.platform !== "win32") return null;
+  const UNINSTALL = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+  try {
+    for (const key of await regQuerySubkeys(UNINSTALL)) {
+      const displayName = await regQueryValue(key, "DisplayName");
+      if (!displayName || !GUI_NAME_RE.test(displayName)) continue;
+      const loc = await regQueryValue(key, "InstallLocation");
+      if (!loc) continue;
+      const exe = path.join(loc, GUI_EXE_NAME);
+      if (fileExists(exe)) return exe;
+    }
+  } catch { /* 注册表不可读就走兜底 */ }
+  try {
+    const programs = path.join(process.env.LOCALAPPDATA || "", "Programs");
+    const dirs = await fsp.readdir(programs).catch(() => []);
+    const dir = pickInstalledGuiDir(dirs);
+    if (dir) {
+      const exeDir = path.join(programs, dir);
+      const files = await fsp.readdir(exeDir).catch(() => []);
+      const exe = files.find((f) => GUI_NAME_RE.test(f) && f.toLowerCase().endsWith(".exe"));
+      if (exe) {
+        const full = path.join(exeDir, exe);
+        if (fileExists(full)) return full;
+      }
+      const named = path.join(exeDir, GUI_EXE_NAME);
+      if (fileExists(named)) return named;
+    }
+  } catch { /* 兜底也没有就放弃 */ }
+  return null;
+}
+
+/**
+ * focus.show 的消费等待与兜底拉起。同步等待期间 desktop 若活着，会在它自己的
+ * 700ms 轮询里删掉该文件——那就算拉起成功，直接返回。超时仍在 = desktop 未
+ * 运行：spawn 已安装的 GUI（detached、stdio ignore、--no-sandbox），focus.show
+ * 留给新起的 GUI 消费。整个函数后台跑（不 await 在应答路径里），任何失败只记
+ * 日志不外抛——原生宿主绝不能因此挂掉。
+ */
+async function raiseDesktopOrSpawn(focusFile) {
+  try {
+    const deadline = Date.now() + FOCUS_CONSUME_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(FOCUS_CONSUME_POLL_MS);
+      if (!fileExists(focusFile)) return;   // desktop 已消费并拉窗，收工
+    }
+    await logLine("focus-app: focus.show unconsumed after " + FOCUS_CONSUME_WAIT_MS + "ms (desktop not running); trying installed GUI");
+    const exe = await locateInstalledGuiExe();
+    if (!exe) {
+      await logLine("focus-app: installed GUI not found (non-Windows or not installed); focus.show left in place for later consumption");
+      return;
+    }
+    const child = spawn(exe, ["--no-sandbox"], { detached: true, stdio: "ignore" });
+    child.on("error", (err) => { logLine("focus-app: spawn failed: " + (err && err.message)); });
+    child.unref();
+    await logLine("focus-app: spawned installed GUI: " + exe);
+  } catch (err) {
+    try { await logLine("focus-app: fallback launch failed: " + ((err && err.message) || err)); } catch { /* best effort */ }
+  }
+}
+
 async function handle(message) {
   const type = message && message.type;
   // Older/hand-rolled callers may omit the version; only reject a version that
@@ -202,7 +340,11 @@ async function handle(message) {
     case "focus-app": {
       // Signal the desktop shell to raise its window (same file-signal
       // pattern the second-instance handshake uses; no daemon route needed).
-      await fsp.writeFile(path.join(paths.root, "focus.show"), String(process.pid), "utf8");
+      const focusFile = path.join(paths.root, "focus.show");
+      await fsp.writeFile(focusFile, String(process.pid), "utf8");
+      // 断点修复（批-10）：desktop 未运行时没人消费 focus.show，点击等于白点。
+      // 应答不等待——消费检测与兜底拉起后台跑（见 raiseDesktopOrSpawn）。
+      void raiseDesktopOrSpawn(focusFile).catch(() => {});
       return { ok: true };
     }
     default:

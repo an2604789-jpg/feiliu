@@ -83,6 +83,19 @@
   .badge.err{background:var(--err-weak);color:var(--err);}
   .badge.ok{background:var(--ok-weak);color:var(--ok);}
   .nav-foot{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--dim-2);display:flex;align-items:center;gap:6px;}
+  /* 批-10 W2：侧栏“高级”可折叠分组（按钮元素，键盘可达） */
+  .nav-group-toggle{
+    display:flex;align-items:center;gap:6px;width:100%;border:none;background:transparent;cursor:pointer;
+    font-size:11px;color:var(--dim-2);font-weight:600;letter-spacing:.6px;
+    padding:10px 10px 5px;text-transform:uppercase;text-align:left;font-family:inherit;
+  }
+  .nav-group-toggle:hover{color:var(--fg-2);}
+  .nav-group-toggle .chev{display:inline-block;transition:transform .15s;font-size:10px;line-height:1;}
+  .nav-group-toggle[aria-expanded="true"] .chev{transform:rotate(90deg);}
+  .nav-sub .nav-item{padding-left:16px;}
+  /* 批-10 W2：设置页“高级”折叠开关（复用侧栏折叠样式，左侧留出缩进） */
+  .cfg-adv-toggle{margin:2px 0 10px;}
+  .cfg-adv-toggle .label{text-transform:none;letter-spacing:0;font-size:12.5px;}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--dim-2);flex:0 0 auto;}
   .dot.ok{background:var(--ok);} .dot.err{background:var(--err);}
 
@@ -179,11 +192,14 @@
   .pill.paused{background:var(--warn-weak);color:var(--warn);}
   .pill.error{background:var(--err-weak);color:var(--err);}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
-  .actions{display:flex;gap:3px;}
+  .actions{display:flex;gap:3px;flex-wrap:nowrap;}
   .ab{
     border:1px solid transparent;background:transparent;border-radius:7px;width:30px;height:30px;
     display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--dim);
   }
+  /* 批-10：带短文字的高频按钮——宽度自适应但绝不换行 */
+  .ab.with-text{width:auto;min-width:30px;padding:0 9px;gap:5px;font-size:12px;font-weight:600;white-space:nowrap;}
+  .ab .t{line-height:1;}
   .ab:hover{background:var(--panel-3);color:var(--fg);}
   .ab.run:hover{background:var(--ok-weak);color:var(--ok);}
   .ab.danger:hover{background:var(--err-weak);color:var(--err);}
@@ -260,15 +276,20 @@
 
   /* ---------------- 顶部横幅（待确认 / 最近完成） ---------------- */
   .pend-banner{
-    display:none;flex:0 0 auto;flex-direction:column;gap:6px;padding:8px 16px;
-    background:var(--warn-weak);border-bottom:1px solid var(--warn-line);font-size:12.5px;color:#8a5409;
+    display:none;flex-direction:column;gap:8px;margin:10px 16px 0;padding:10px 12px;
+    border:1px solid var(--warn-line);border-radius:var(--radius);background:var(--warn-weak);color:var(--warn);font-size:12.5px;
   }
   [data-theme="dark"] .pend-banner{color:var(--warn);}
-  .pend-banner.show{display:flex;}
+  /* 批-10 W2：出现新条目时淡入；绝不滚动/抢焦点 */
+  @keyframes pendIn{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+  .pend-banner.show{display:flex;animation:pendIn .18s ease-out;}
   .pend-banner .pb-head{display:flex;align-items:center;gap:8px;font-weight:600;}
   .pend-item{display:flex;align-items:center;gap:10px;min-width:0;}
-  .pend-item .pend-name{font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;}
+  .pend-item .pend-name{font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:22vw;}
+  .pend-item .pend-url{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:24vw;cursor:pointer;}
+  .pend-item .pend-url:hover{color:var(--fg-2);text-decoration:underline;}
   .pend-item .pend-src,.pend-item .pend-size{color:var(--dim);white-space:nowrap;font-size:11.5px;}
+  .pend-item .pend-cd{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px;color:var(--warn);}
   .pend-item .btn{padding:3px 10px;font-size:12px;}
   .pend-item .sp{flex:1;}
   .pend-more{color:var(--dim);}
@@ -294,6 +315,18 @@
   .probe-line{display:none;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin:-6px 0 10px;}
   .probe-line.show{display:flex;}
   .probe-line b{color:var(--fg);font-weight:600;}
+  /* 批-10 W2：粘贴即下的快捷行（URL 栏正下方） */
+  .quick-row{
+    display:none;align-items:center;gap:10px;padding:6px 16px;
+    background:var(--accent-weak);border-bottom:1px solid var(--line);
+    font-size:12.5px;animation:pendIn .18s ease-out;
+  }
+  .quick-row.show{display:flex;}
+  .quick-row .qr-name{font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw;}
+  .quick-row .qr-size{color:var(--dim);white-space:nowrap;}
+  .quick-row .qr-dup{color:var(--warn);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .quick-row .btn{padding:3px 10px;font-size:12px;}
+  .quick-row .sp{flex:1;}
   .subbar select{width:auto;flex:0 0 auto;padding:6px 8px;}
 
   /* ---------------- 队列分组管理（设置页） ---------------- */
@@ -380,14 +413,20 @@
         <!-- 分类按钮由 JS 生成 -->
       </div>
       <div class="nav-group">
-        <div class="nav-title">工具</div>
+        <div class="nav-title">常用</div>
         <button class="nav-item" data-view="page:settings"><span class="ic" data-ic="settings"></span><span class="label">设置</span></button>
         <button class="nav-item" data-view="page:discover"><span class="ic" data-ic="search"></span><span class="label">媒体嗅探</span></button>
         <button class="nav-item" data-view="page:history"><span class="ic" data-ic="history"></span><span class="label">历史记录</span></button>
         <button class="nav-item" data-view="page:schedule"><span class="ic" data-ic="clock"></span><span class="label">计划任务</span></button>
-        <button class="nav-item" data-view="page:capture"><span class="ic" data-ic="shield"></span><span class="label">抓取代理</span></button>
-        <button class="nav-item" data-view="page:agent"><span class="ic" data-ic="link"></span><span class="label">Agent 接入</span></button>
-        <button class="nav-item" data-view="page:log"><span class="ic" data-ic="file"></span><span class="label">运行日志</span></button>
+        <!-- 批-10 W2：低频工具页收进可折叠“高级”分组，默认收起；点组内页面自动展开 -->
+        <button class="nav-group-toggle" id="advToolsToggle" aria-expanded="false" title="展开或收起高级工具">
+          <span class="chev">▸</span><span class="label">高级</span>
+        </button>
+        <div class="nav-sub" id="advToolsGroup" hidden>
+          <button class="nav-item" data-view="page:capture"><span class="ic" data-ic="shield"></span><span class="label">抓取代理</span></button>
+          <button class="nav-item" data-view="page:agent"><span class="ic" data-ic="link"></span><span class="label">Agent 接入</span></button>
+          <button class="nav-item" data-view="page:log"><span class="ic" data-ic="file"></span><span class="label">运行日志</span></button>
+        </div>
       </div>
     </nav>
     <div class="nav-foot"><span class="dot" id="connDot"></span><span id="connText">连接中…</span></div>
@@ -407,6 +446,9 @@
       <button class="btn icon" id="btnTheme" title="切换浅色 / 深色主题"><span class="ic" data-ic="theme"></span></button>
     </header>
 
+    <!-- 批-10 W2：粘贴即下快捷行（探测成功后出现在 URL 栏正下方；默认隐藏） -->
+    <div class="quick-row" id="quickRow"></div>
+
     <div class="subbar">
       <div class="view-title" id="viewTitle">全部</div>
       <div class="view-count" id="viewCount"></div>
@@ -425,6 +467,8 @@
       <button class="btn" id="btnPauseAll" title="暂停整个队列"><span class="ic" data-ic="pause"></span>全部暂停</button>
       <button class="btn" id="btnResumeAll" title="继续整个队列"><span class="ic" data-ic="play"></span>全部继续</button>
       <button class="btn" id="btnClearDone" title="从列表移除已完成的任务（不会删除文件）"><span class="ic" data-ic="eraser"></span>清除已完成</button>
+      <!-- 批-10：仅“失败”视图显示，一键重试本视图内全部失败任务（行为同批量条的重试通道） -->
+      <button class="btn" id="btnRetryAll" title="重试当前失败视图里的全部失败任务" hidden><span class="ic" data-ic="retry"></span>全部重试</button>
     </div>
 
     <div class="conn-banner" id="connBanner">
@@ -535,6 +579,11 @@
             <span class="hint">删除分组不会删除任务：该组任务回到默认调度（跟随总并发）。组内已有任务的分组建议只改名/改并发，不删除。</span>
           </div>
 
+          <!-- 批-10 W2：低频卡片收进可折叠“高级”区（状态存 localStorage，重启保持） -->
+          <button class="nav-group-toggle cfg-adv-toggle" id="cfgAdvToggle" aria-expanded="false" title="展开或收起高级设置">
+            <span class="chev">▸</span><span class="label">高级设置（网络与安全 / 自动行为 / 浏览器接管 / 外部引擎）</span>
+          </button>
+          <div id="cfgAdvCards" hidden>
           <div class="card">
             <h3>网络与安全</h3>
             <p class="cdesc">代理、浏览器标识与 TLS。</p>
@@ -633,6 +682,8 @@
               </div>
             </div>
           </div>
+
+          </div><!-- /cfgAdvCards：保存/恢复按钮保持在折叠区外，任何状态都可见 -->
 
           <div class="form-actions">
             <button class="btn primary" id="btnSaveCfg">保存设置</button>
@@ -1213,6 +1264,13 @@ function friendlyError(m){
   if (/ENOTFOUND|getaddrinfo|name or service|无法解析|dns|resolve/i.test(m)) return "无法解析域名：请检查网络或链接是否正确。";
   if (/ECONNREFUSED|拒绝连接|refused/i.test(m)) return "服务器拒绝连接：该地址可能不可用。";
   if (/ETIMEDOUT|ECONNRESET|timeout|timed out|超时|reset/i.test(m)) return "连接超时或被中断：可稍后重试。";
+  // 批-10 三模式：每个都给“下一步”而不止翻译。位置有讲究——
+  //   · 429 必须在 404/401 两行之前（正则同吃纯数字，后判会被它们截走）；
+  //   · EPROTO 必须在证书/TLS 行之前——OpenSSL 的 EPROTO 报错文本常带
+  //     "SSL routines" 字样，先判证书就会把代理隧道问题误诊成证书问题。
+  if (/429|too many requests/i.test(m)) return "对方限流（429）：稍后重试；反复出现就减少该任务的连接数，或在设置里换代理。";
+  if (/EPROTO|wrong version number/i.test(m)) return "TLS 握手失败（EPROTO）：多为代理隧道问题——检查代理类型（HTTP/SOCKS5）与端口，或暂时绕过代理重试。";
+  if (/503|service unavailable/i.test(m)) return "服务暂不可用（503）：稍后重试。";
   if (/certificate|证书|TLS|SSL|self.signed|self signed/i.test(m)) return "TLS 证书校验失败：可在设置中临时跳过 TLS 校验。";
   if (/404|not found/i.test(m)) return "资源不存在（404）：链接可能已失效。";
   if (/401|403|unauthorized|forbidden|认证|授权/i.test(m)) return "需要授权或被拒绝访问：可在高级选项中填写账号密码 / Cookie。";
@@ -1348,6 +1406,10 @@ function buildQueueNav(queues){
 function applyView(){
   const v = state.view;
   const isPage = v.startsWith("page:");
+  updateRetryAllVis();
+  renderPendBanner();          // 待确认区块只在 全部/队列/失败 视图显示（批-10 W2）
+  // 点到“高级”分组里的页面时自动展开，active 高亮不丢
+  if (/^page:(capture|agent|log)$/.test(v)) setAdvToolsOpen(true);
   // 任务列表 pane 对所有任务视图（含分类视图）显示，功能页时隐藏。
   document.getElementById("pane-tasks").classList.toggle("active", !isPage);
   ["settings","discover","history","schedule","capture","agent","log"].forEach((p)=>{
@@ -1378,6 +1440,63 @@ function applyView(){
   render();
 }
 bindNav();
+
+/* 全部重试（批-10）：仅“失败”视图可见；对当前视图内全部 error 任务逐个走
+ * 与批量条 data-batch="retry" 完全相同的通道（POST /api/tasks/:id/retry）。
+ * 执行中禁用按钮防双击；搜索词有效时只重试当前筛出的那部分，与所见一致。 */
+function updateRetryAllVis(){
+  const b = document.getElementById("btnRetryAll");
+  if (b) b.hidden = state.view !== "error";
+}
+document.getElementById("btnRetryAll").onclick = async () => {
+  const btn = document.getElementById("btnRetryAll");
+  const targets = filteredTasks().filter((t)=>t.status==="error");
+  if (!targets.length){ toast("当前视图没有失败的任务","err"); return; }
+  btn.disabled = true;
+  let done = 0, fail = 0;
+  try {
+    for (const t of targets){
+      try { await api("/api/tasks/"+encodeURIComponent(t.id)+"/retry", { method:"POST" }); done++; }
+      catch { fail++; }
+    }
+    toast("已重试 "+done+" 项"+(fail?"，"+fail+" 项失败":""), (!done && fail) ? "err" : "ok");
+  } catch (err){ toast(readableError(err),"err"); }
+  finally {
+    btn.disabled = false;
+    refresh();
+  }
+};
+
+/* ---------------- 折叠分组（批-10 W2） ---------------- */
+/* 侧栏“高级”分组：默认收起；点组内页面由 applyView 自动展开。
+ * 开关是 button 元素（键盘可达），aria-expanded 同步给读屏。 */
+function setAdvToolsOpen(open){
+  const btn = document.getElementById("advToolsToggle");
+  const box = document.getElementById("advToolsGroup");
+  if (!btn || !box) return;
+  box.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+document.getElementById("advToolsToggle").onclick = () => {
+  setAdvToolsOpen(document.getElementById("advToolsGroup").hidden);
+};
+/* 设置页“高级”折叠：状态存 localStorage，重启保持（默认收起）。 */
+function setCfgAdvOpen(open){
+  const btn = document.getElementById("cfgAdvToggle");
+  const box = document.getElementById("cfgAdvCards");
+  if (!btn || !box) return;
+  box.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  try { localStorage.setItem("dx-cfg-adv-open", open ? "1" : "0"); } catch { /* 隐私模式等 */ }
+}
+document.getElementById("cfgAdvToggle").onclick = () => {
+  setCfgAdvOpen(document.getElementById("cfgAdvCards").hidden);
+};
+(function initCfgAdv(){
+  let saved = null;
+  try { saved = localStorage.getItem("dx-cfg-adv-open"); } catch { /* 同上 */ }
+  setCfgAdvOpen(saved === "1");
+})();
 
 /* ---------------- 任务过滤 ---------------- */
 function filteredTasks(){
@@ -1649,17 +1768,83 @@ function rowProgHtml(t){
   return barInner;
 }
 
-/** 行内操作按钮 HTML(首建与形态切换重建共用;可见性随状态变化的规则在这里)。 */
+// [ui-pure] begin
+// 任务卡右键菜单的“状态→菜单项”可见性纯函数（批-10）。desktop/main.mjs 的
+// menu:taskActions 在运行期读取本段并求值（单份语义，不复制实现）；本段必须
+// 保持自包含：无 DOM、无 window、无外部闭包引用，只能用入参。
+// 返回项里的 action 与行内按钮 data-a / onAction 的动作名一一对应。
+function taskMenuItems(status){
+  const items = [];
+  if (status==="downloading" || status==="connecting" || status==="queued") items.push({ action:"pause", label:"暂停" });
+  if (status==="paused") items.push({ action:"start", label:"继续" });
+  if (status==="error") items.push({ action:"retry", label:"重试" });
+  if (status!=="complete") items.push({ action:"cancel", label:"取消" });
+  if (status==="complete"){
+    items.push({ action:"openFile", label:"打开文件" });
+    items.push({ action:"showFolder", label:"打开文件夹" });
+  }
+  items.push({ action:"copyLink", label:"复制下载链接" });
+  items.push({ action:"remove", label:"删除" });
+  return items;
+}
+
+/** 粘贴文本取首个非空行（剪贴板常带换行/广告尾行）。 */
+function firstUrlLine(text){
+  const lines = String(text || "").split(/\r?\n/);
+  for (const l of lines){ const t = l.trim(); if (t) return t; }
+  return "";
+}
+/**
+ * 粘贴即下决策（批-10 W2）：粘贴文本 + 上次探测缓存 → 三分支。
+ *   "probe" = http/https 链接 → 走探测通道（m-probe 同款 POST /api/probe）
+ *   "reuse" = 与上次探测成功的是同一链接 → 直接复用结果显示快捷行（不重复探测）
+ *   "none"  = 空 / magnet / ftp / 非 http(s) 链接 → 不动作，保持现行为
+ * （magnet 判定与 GUI-PURE 段 isMagnetUrl 同语义：/^magnet:/i；本段必须自包含，
+ *   不得引用段外函数。）
+ */
+function planPasteAction(text, lastProbe){
+  const url = firstUrlLine(text);
+  if (!url) return { action:"none", url:"" };
+  if (/^magnet:/i.test(url) || /^ftp:/i.test(url)) return { action:"none", url:"" };
+  if (!/^https?:\/\//i.test(url)) return { action:"none", url:"" };
+  if (lastProbe && lastProbe.url === url && lastProbe.result) return { action:"reuse", url };
+  return { action:"probe", url };
+}
+/**
+ * 同 URL 是否已有在途任务（host.mjs LIVE_TASK_STATUSES 同语义：
+ * queued/connecting/downloading/paused；error/complete 不算，允许重新下载）。
+ */
+function findLiveTaskUrl(tasks, url){
+  const live = ["queued", "connecting", "downloading", "paused"];
+  return (tasks || []).find((t) => t && t.url === url && live.includes(t.status)) || null;
+}
+/** 待审倒计时文案：expiresAt(ms) − now(ms) → "mm:ss"（向上取整）；到点/过期/无效 → "已超时"。 */
+function pendCountdownText(expiresAt, now){
+  const ms = Number(expiresAt) - Number(now);
+  if (!isFinite(ms) || ms <= 0) return "已超时";
+  const s = Math.ceil(ms / 1000);
+  const m = Math.floor(s / 60), r = s % 60;
+  return String(m).padStart(2, "0") + ":" + String(r).padStart(2, "0");
+}
+/** 待确认区块在哪些任务视图显示（批-10 W2 拍板：全部/队列/失败）。 */
+function pendBannerVisibleFor(view){
+  return view === "all" || view === "queued" || view === "error";
+}
+// [ui-pure] end
+
+/** 行内操作按钮 HTML(首建与形态切换重建共用;可见性随状态变化的规则在这里)。
+ *  批-10：高频按钮带短文字(.with-text)去神秘化——暂停/继续(互斥,按状态)、
+ *  重试(error)、打开文件夹(complete+DESKTOP);其余保持纯图标。 */
 function rowActionsHtml(t){
   const running = t.status==="downloading" || t.status==="connecting";
   const actions = [];
-  if (running || t.status==="queued") actions.push(abBtn("pause",t.id,"pause","暂停（保留临时文件）","run"));
-  if (t.status==="paused") actions.push(abBtn("play",t.id,"start","继续（断点续传）","run"));
-  if (t.status==="error") actions.push(abBtn("retry",t.id,"retry","重试","run"));
+  if (running || t.status==="queued") actions.push(abBtn("pause",t.id,"pause","暂停（保留临时文件）","run","暂停"));
+  if (t.status==="paused") actions.push(abBtn("play",t.id,"start","继续（断点续传）","run","继续"));
+  if (t.status==="error") actions.push(abBtn("retry",t.id,"retry","重试","run","重试"));
   if (t.status!=="complete") actions.push(abBtn("cancel",t.id,"cancel","取消并删除未完成临时文件",""));
   if (t.status==="complete" && DESKTOP){
     actions.push(abBtn("open",t.id,"openFile","打开文件","run"));
-    actions.push(abBtn("folder",t.id,"showFolder","打开所在文件夹",""));
+    actions.push(abBtn("folder",t.id,"showFolder","打开所在文件夹","","打开文件夹"));
   }
   // 完成任务可“转换…”（批-4：MP4/H.265/MP3/GIF 预设，源文件只读）
   if (t.status==="complete") actions.push(abBtn("film",t.id,"convert","转换为其他格式（MP4 / H.265 / MP3 / GIF）",""));
@@ -1692,8 +1877,9 @@ function renderTask(t){
     '</div>'+
   '</div>';
 }
-function abBtn(iconName,id,action,title,cls){
-  return '<button class="ab '+cls+'" data-a="'+action+'" data-id="'+id+'" title="'+title+'">'+icon(iconName)+'</button>';
+function abBtn(iconName,id,action,title,cls,text){
+  return '<button class="ab '+cls+(text?" with-text":"")+'" data-a="'+action+'" data-id="'+id+'" title="'+title+'">'+icon(iconName)+
+    (text?'<span class="t">'+text+'</span>':"")+'</button>';
 }
 
 /* ---------------- 行复用:增量同步(DOM 侧) ---------------- */
@@ -1821,6 +2007,25 @@ function wireRowActions(scope){
     b.onclick = ()=> openTaskDetail(b.dataset.id);
   });
 }
+
+/* 任务卡右键菜单（批-10，仅桌面容器）：菜单项可见性由 desktop/main.mjs 里的
+ * [ui-pure] 纯函数按状态决定；点击回传动作名后走与行内按钮同一入口 onAction，
+ * 不另设分发逻辑。#rows 上一次性事件委托——行元素会 keyed 复用，不能逐行绑。
+ * 键盘等价：焦点落在行内按钮/复选框上按“菜单键”（或 Shift+F10）同样触发
+ * contextmenu 事件，冒泡到这里被同一处理函数接住。 */
+document.getElementById("rows").addEventListener("contextmenu", async (e)=>{
+  if (!DESKTOP || !e.target || !e.target.closest) return;   // 浏览器里保留原生菜单
+  const card = e.target.closest(".task");
+  if (!card) return;
+  e.preventDefault();
+  const id = card.dataset.id;
+  const t = state.tasks.find((x)=>x.id===id);
+  if (!t) return;
+  try {
+    const action = await window.downloadx.taskActions({ status: t.status });
+    if (action) onAction(action, id);
+  } catch { /* 旧桌面包无该通道：静默放弃，不打断使用 */ }
+});
 async function onAction(action,id){
   try {
     if (action==="copyLink"){
@@ -2214,7 +2419,13 @@ function renderCounts(){
     const qid = t.queueId || "default"; cq[qid] = (cq[qid]||0)+1;
   });
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
-  set("c-all",c.all); set("c-active",c.active); set("c-queued",c.queued);
+  set("c-all",c.all); set("c-active",c.active);
+  // 批-10 W2：待审数并入“队列”徽标（如 3+1）；明细悬停可见
+  const pendN = (state.pending || []).length;
+  set("c-queued", pendN > 0 ? c.queued + "+" + pendN : c.queued);
+  const qBadge = document.getElementById("c-queued");
+  if (qBadge) qBadge.parentElement.title = pendN > 0
+    ? "队列 " + c.queued + " 项，另有 " + pendN + " 条待确认" : "";
   set("c-complete",c.complete); set("c-error",c.error);
   Object.keys(CAT_META).forEach((k)=>set("c-cat-"+k, c.cat[k]));
   Object.keys(state.queueNameById).forEach((qid)=>set("c-queue-"+qid, cq[qid]||0));
@@ -2275,25 +2486,77 @@ async function loadPending(){
 function renderPendBanner(){
   const bar = document.getElementById("pendBanner");
   const list = document.getElementById("pendList");
-  if (!state.pending.length){ bar.classList.remove("show"); return; }
+  // 批-10 W2：只在 全部/队列/失败 视图显示；空或不在视图内整块隐藏并停掉倒计时
+  if (!state.pending.length || !pendBannerVisibleFor(state.view)){
+    bar.classList.remove("show");
+    stopPendTimer();
+    return;
+  }
   bar.classList.add("show");
   list.innerHTML = state.pending.slice(0, 4).map((p)=>{
-    const name = p.filename || baseName({ url: p.url });
     const info = state.pendingSizes[p.url];
     const sizeTxt = (info && info.pending) ? "获取大小中…" :
       (info && typeof info.totalBytes === "number") ? fmtBytes(info.totalBytes) : "大小未知";
     return '<div class="pend-item">'+
-      '<span class="pend-name" title="'+esc(p.url)+'">'+esc(name)+'</span>'+
+      (p.filename ? '<span class="pend-name" title="'+esc(p.url)+'">'+esc(p.filename)+'</span>' : "")+
+      '<span class="pend-url" data-ap="'+esc(p.id)+'" title="'+esc(p.url)+'（点击可改文件名与目录后批准）">'+esc(p.url)+'</span>'+
       '<span class="pend-src">来源 '+esc(PEND_SOURCE[p.queueId] || p.queueId || "外部")+'</span>'+
       '<span class="pend-size">'+esc(sizeTxt)+'</span>'+
+      '<span class="pend-cd" data-expires="'+esc(String(p.expiresAt ?? ""))+'"></span>'+
       '<span class="sp"></span>'+
-      '<button class="btn" data-ap="'+esc(p.id)+'">批准…</button>'+
+      '<button class="btn" data-ap="'+esc(p.id)+'" title="按待审时记录的文件名与目录直接加入队列">批准</button>'+
       '<button class="btn danger" data-rj="'+esc(p.id)+'">拒绝</button>'+
     '</div>';
   }).join("") +
   (state.pending.length > 4 ? '<div class="pend-item pend-more">还有 '+(state.pending.length - 4)+' 个待确认，批准后依次处理</div>' : "");
-  list.querySelectorAll("[data-ap]").forEach((b)=>{ b.onclick = ()=>openApprove(b.dataset.ap); });
+  // [批准]=直接批准（POST /api/pending/:id/approve，用待审记录自带的文件名/目录）；
+  // 点 URL/文件名=打开审批模态（可改文件名/目录/分类后再批准）。
+  list.querySelectorAll(".pend-url[data-ap]").forEach((b)=>{ b.onclick = ()=> openApprove(b.dataset.ap); });
+  list.querySelectorAll("button[data-ap]").forEach((b)=>{ b.onclick = ()=> directApprovePending(b.dataset.ap); });
   list.querySelectorAll("[data-rj]").forEach((b)=>{ b.onclick = ()=>rejectPending(b.dataset.rj); });
+  pendTick();
+  startPendTimer();
+}
+/* 倒计时：仅区块可见时运行（每秒刷新 mm:ss）；隐藏即停，不空转 */
+let pendCdTimer = null;
+function pendTick(){
+  const now = Date.now();
+  document.querySelectorAll("#pendList .pend-cd").forEach((el)=>{
+    el.textContent = pendCountdownText(Number(el.dataset.expires), now);
+  });
+}
+function startPendTimer(){
+  if (pendCdTimer) return;
+  pendCdTimer = setInterval(pendTick, 1000);
+}
+function stopPendTimer(){
+  if (!pendCdTimer) return;
+  clearInterval(pendCdTimer);
+  pendCdTimer = null;
+}
+/* 行内直接批准：不经过模态，走既有 /api/pending/:id/approve，用待审记录自带的
+ * 文件名/目录（daemon approve(id, overrides={}) 语义）。成功/409 的处理与审批
+ * 模态 ap-approve 同一套语义；倒计时语义不变（daemon 侧超时自动入队照旧）。 */
+async function directApprovePending(id){
+  const p = state.pending.find((x)=>x.id===id);
+  try {
+    await api("/api/pending/"+encodeURIComponent(id)+"/approve", { method:"POST", body:{} });
+    state.pending = state.pending.filter((x)=>x.id!==id);
+    renderPendBanner();
+    toast("已批准："+(p ? (p.filename || p.url) : "该链接")+"，任务已加入队列","ok");
+    setNavView("all");
+    refresh();
+  } catch (err){
+    if (err && err.status === 409){
+      toast("该链接的任务已在队列中，无需重复批准","err");
+      state.pending = state.pending.filter((x)=>x.id!==id);
+      renderPendBanner();
+      const dupId = err.data && err.data.existingTaskId;
+      if (dupId) jumpToTask(dupId);
+    } else {
+      toast("批准失败："+readableError(err),"err");
+    }
+  }
 }
 /* 挂起条目的大小横幅上要展示，但 /api/pending 不带：逐个用 probe 补（一次一个，失败 60s 后才重试） */
 let probeChain = Promise.resolve();
@@ -2478,6 +2741,82 @@ taskOverlay.addEventListener("click",(e)=>{ if(e.target===taskOverlay) taskOverl
 /* ---------------- 顶部操作 ---------------- */
 document.getElementById("btnNew").onclick=()=>openNew();
 document.getElementById("urlInput").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ openNew(); } });
+
+/* ---------------- 粘贴即下（批-10 W2） ----------------
+ * 粘贴 http(s) 链接 300ms 防抖后自动探测（m-probe 同款 POST /api/probe），
+ * 成功即在 URL 栏下方弹快捷行：文件名 · 大小 [开始下载] [更多选项…]。
+ * magnet / ftp / 探测失败不弹快捷行，回车/按钮保持既有路径。
+ * 分支判定在 [ui-pure] 纯函数 planPasteAction；同 URL 在途时快捷行直接提示
+ * “已在队列中”（与 readableError 409 同文案），不再给开始按钮。 */
+let pasteTimer = null, pasteSeq = 0;
+const lastUrlProbe = { url: null, result: null };
+function hideQuickRow(){
+  const el = document.getElementById("quickRow");
+  el.classList.remove("show");
+  el.innerHTML = "";
+}
+document.getElementById("urlInput").addEventListener("paste", ()=>{
+  clearTimeout(pasteTimer);
+  pasteTimer = setTimeout(()=>{ void runUrlQuickProbe(); }, 300);
+});
+// 手输改动后快捷行即过期：内容与快捷行对应 URL 不一致就收起
+document.getElementById("urlInput").addEventListener("input", ()=>{
+  const el = document.getElementById("quickRow");
+  if (!el.classList.contains("show")) return;
+  if (firstUrlLine(document.getElementById("urlInput").value) !== lastUrlProbe.url) hideQuickRow();
+});
+async function runUrlQuickProbe(){
+  const decision = planPasteAction(document.getElementById("urlInput").value, lastUrlProbe);
+  if (decision.action === "none"){ hideQuickRow(); return; }
+  if (decision.action === "reuse"){ renderQuickRow(lastUrlProbe.url, lastUrlProbe.result); return; }
+  const url = decision.url;
+  const seq = ++pasteSeq;
+  try {
+    const r = await api("/api/probe", { method:"POST", body:{ url } });
+    if (seq !== pasteSeq) return;                     // 期间又粘贴了新链接，旧结果作废
+    if (!r || r.excluded || r.error){                 // 例外列表/探测失败：保持现行为
+      lastUrlProbe.url = null; lastUrlProbe.result = null;
+      hideQuickRow();
+      return;
+    }
+    lastUrlProbe.url = url; lastUrlProbe.result = r;
+    renderQuickRow(url, r);
+  } catch {
+    if (seq !== pasteSeq) return;
+    lastUrlProbe.url = null; lastUrlProbe.result = null;
+    hideQuickRow();
+  }
+}
+function renderQuickRow(url, r){
+  const el = document.getElementById("quickRow");
+  const name = r.filename || baseName({ url });
+  const size = (typeof r.totalBytes === "number") ? fmtBytes(r.totalBytes) : "大小未知";
+  const live = findLiveTaskUrl(state.tasks, url);
+  el.innerHTML =
+    '<span class="qr-name" title="'+esc(url)+'">'+esc(name)+'</span>'+
+    '<span class="qr-size">'+esc(size)+'</span>'+
+    (live
+      ? '<span class="qr-dup">已在队列中：同一链接的任务正在进行。</span>'
+      : '<button class="btn primary" id="qrStart" title="用默认目录与自动分类直接加入队列">开始下载</button>')+
+    '<span class="sp"></span>'+
+    '<button class="btn ghost" id="qrMore" title="打开新建下载对话框（可改文件名 / 目录 / 连接数等）">更多选项…</button>';
+  el.classList.add("show");
+  const s = document.getElementById("qrStart");
+  if (s) s.onclick = async ()=>{
+    s.disabled = true;
+    const cfg = state.config || {};
+    const cat = r.category || pickCategory(url, state.catMap) || "";
+    const body = { url };
+    // 与 m-btnOk 同一套目录语义（批-5/P-6）：分类由前端算进最终 dir
+    const dir = submitDirFor("", cat, cfg.defaultDir || "");
+    if (dir) body.dir = dir;
+    if (cat) body.category = cat;
+    if (r.filename) body.filename = r.filename;
+    await submitNewTask(body);   // 成功清空输入框并切到“全部”；409 走既有“已在队列”对话框
+    hideQuickRow();
+  };
+  document.getElementById("qrMore").onclick = ()=>{ hideQuickRow(); openNew(); };
+}
 document.getElementById("searchInput").addEventListener("input",(e)=>{ state.query=e.target.value; render(); });
 document.getElementById("btnPauseAll").onclick=async()=>{ try{ await api("/api/queue/pause",{method:"POST"}); toast("已暂停整个队列","ok"); refresh(); }catch(err){ toast(readableError(err),"err"); } };
 document.getElementById("btnResumeAll").onclick=async()=>{ try{ await api("/api/queue/resume",{method:"POST"}); toast("已继续整个队列","ok"); refresh(); }catch(err){ toast(readableError(err),"err"); } };
